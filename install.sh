@@ -36,7 +36,7 @@ fi
 # ---- build & start ----
 
 echo "Building ArKex 2.0..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build --pull
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
 
 echo "Starting services..."
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
