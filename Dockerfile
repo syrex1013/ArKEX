@@ -7,7 +7,7 @@ COPY web/ ./
 RUN npm run build:static
 
 # ===== Stage 2: Build Go binary =====
-FROM golang:1.24-alpine AS go-builder
+FROM golang:1.26-alpine AS go-builder
 WORKDIR /app
 # Install build deps
 RUN apk add --no-cache gcc musl-dev git
@@ -20,13 +20,16 @@ COPY . .
 COPY --from=web-builder /app/web/dist ./cmd/arkex/web/dist
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -X main.Version=$(git describe --tags --always --dirty)" \
+    -ldflags="-s -w -X main.Version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" \
     -tags embedui \
     -o /arkex \
     ./cmd/arkex
 
 # ===== Stage 3: Minimal runtime =====
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata docker-cli
+RUN addgroup -S arkex && adduser -S -G arkex arkex
+USER arkex
 COPY --from=go-builder /arkex /arkex
 EXPOSE 8080
 ENTRYPOINT ["/arkex"]

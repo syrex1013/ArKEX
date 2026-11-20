@@ -18,6 +18,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 	"github.com/threatvector/arkex/agent"
+	"github.com/threatvector/arkex/db"
 	"github.com/threatvector/arkex/server"
 	"github.com/threatvector/arkex/storage"
 )
@@ -57,16 +58,17 @@ func run(ctx context.Context) error {
 	}
 
 	// Connect to PostgreSQL
-	pool, err := pgxpool.New(ctx, pgDSN)
+	pool, err := db.Connect(ctx, pgDSN)
 	if err != nil {
 		return fmt.Errorf("pg connect: %w", err)
 	}
 	defer pool.Close()
-
-	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("pg ping: %w", err)
-	}
 	slog.Info("postgres connected")
+
+	// Run app schema migration (idempotent)
+	if err := db.Migrate(ctx, pool); err != nil {
+		return fmt.Errorf("schema migrate: %w", err)
+	}
 
 	// Run River migrations
 	if err := migrateRiver(ctx, pool); err != nil {

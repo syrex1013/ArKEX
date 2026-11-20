@@ -5,12 +5,16 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/threatvector/arkex/llmpool"
+	"github.com/threatvector/arkex/llmrec"
+	"github.com/threatvector/arkex/sandbox"
 )
 
 // Engine orchestrates planner + worker loops via River distributed job queue.
@@ -42,9 +46,25 @@ func DefaultConfig() EngineConfig {
 }
 
 func New(db *pgxpool.Pool, cfg EngineConfig) (*Engine, error) {
+	scratchDir := os.Getenv("ARKEX_SCRATCH_DIR")
+	if scratchDir == "" {
+		scratchDir = "/tmp/arkex-scratch"
+	}
+	sbMgr, err := sandbox.NewManager(os.Getenv("ARKEX_PROXY_ADDR"), scratchDir, os.Getenv("ARKEX_SANDBOX_NETWORK"))
+	if err != nil {
+		return nil, fmt.Errorf("sandbox manager: %w", err)
+	}
+
+	llmPool := llmpool.New(llmpool.DefaultProviders(
+		os.Getenv("ANTHROPIC_API_KEY"),
+		os.Getenv("OPENAI_API_KEY"),
+		os.Getenv("OLLAMA_URL"),
+	))
+	rec := llmrec.New(db)
+
 	workers := river.NewWorkers()
-	river.AddWorker(workers, &PlannerWorker{})
-	river.AddWorker(workers, &IntentWorker{})
+	river.AddWorker(workers, &PlannerWorker{db: db, cfg: cfg})
+	river.AddWorker(workers, &IntentWorker{db: db, pool: llmPool, rec: rec, sandbox: sbMgr, cfg: cfg})
 
 	rc, err := river.NewClient(riverpgxv5.New(db), &river.Config{
 		Queues: map[string]river.QueueConfig{
