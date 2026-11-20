@@ -1,145 +1,86 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { motion } from "framer-motion";
+import type { ReactNode } from "react";
+import * as React from "react";
 
-const NAV = [
-  { href: "/", label: "Dashboard" },
-  { href: "/tasks", label: "Tasks" },
-  { href: "/findings", label: "Findings" },
-  { href: "/traffic", label: "Traffic" },
-  { href: "/lab", label: "0-Day Lab" },
-  { href: "/approvals", label: "Approvals" },
-  { href: "/settings", label: "Settings" },
-];
+import { AppSidebar } from "@/app/(main)/_components/sidebar/app-sidebar";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { auth } from "@/lib/auth";
+import { getClientCookie } from "@/lib/cookie.client";
+import {
+  SIDEBAR_COLLAPSIBLE_VALUES,
+  SIDEBAR_VARIANT_VALUES,
+  type SidebarCollapsible,
+  type SidebarVariant,
+} from "@/lib/preferences/layout";
+import { PREFERENCE_DEFAULTS } from "@/lib/preferences/preferences-config";
+import { cn } from "@/lib/utils";
 
-export default function MainLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+import { MainContent } from "./_components/main-content";
+
+// Reads a layout-critical preference from the browser cookie (falls back to the
+// default during static-export prerender where document is unavailable). Kept
+// fully client-side so the app can be statically exported — no Server Actions /
+// next/headers.
+function readPref<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  if (typeof document === "undefined") return fallback;
+  const value = getClientCookie(key);
+  return value && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+}
+
+export default function Layout({ children }: Readonly<{ children: ReactNode }>) {
+  // Client-side auth gate — replaces the Next proxy/middleware that static export
+  // disables. No token → bounce to /login; render nothing until confirmed so no
+  // protected UI (or its API calls) flashes for a logged-out visitor.
+  const [authed, setAuthed] = React.useState(false);
+  React.useEffect(() => {
+    if (auth.getToken()) {
+      setAuthed(true);
+    } else {
+      // When the client-side guard sees a logged-out state, the cookie must be cleared too: otherwise proxy.ts, going
+      // by "cookie exists" alone, would bounce us from /login back to the main UI and ping-pong with this guard
+      // in an infinite redirect → blank screen (triggered when cookie and localStorage disagree).
+      auth.clearToken();
+      window.location.href = "/login";
+    }
+  }, []);
+
+  const defaultOpen = typeof document === "undefined" ? true : getClientCookie("sidebar_state") !== "false";
+  const variant = readPref<SidebarVariant>(
+    "sidebar_variant",
+    SIDEBAR_VARIANT_VALUES,
+    PREFERENCE_DEFAULTS.sidebar_variant,
+  );
+  const collapsible = readPref<SidebarCollapsible>(
+    "sidebar_collapsible",
+    SIDEBAR_COLLAPSIBLE_VALUES,
+    PREFERENCE_DEFAULTS.sidebar_collapsible,
+  );
+
+  if (!authed) return null;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}>
-      {/* Top Navigation */}
-      <header
-        style={{
-          height: 56,
-          background: "var(--tv-neutral)",
-          borderBottom: "1px solid var(--tv-border)",
-          display: "flex",
-          alignItems: "center",
-          padding: "0 24px",
-          gap: 32,
-          position: "sticky",
-          top: 0,
-          zIndex: 100,
-        }}
+    <SidebarProvider
+      defaultOpen={defaultOpen}
+      style={
+        {
+          "--sidebar-width": "calc(var(--spacing) * 68)",
+        } as React.CSSProperties
+      }
+    >
+      <AppSidebar variant={variant} collapsible={collapsible} />
+      <SidebarInset
+        className={cn(
+          "[html[data-content-layout=centered]_&>*]:mx-auto",
+          "[html[data-content-layout=centered]_&>*]:w-full",
+          "[html[data-content-layout=centered]_&>*]:max-w-screen-2xl",
+          "peer-data-[variant=inset]:border",
+          "[--dashboard-header-height:--spacing(12)]",
+          "min-w-0 overflow-x-hidden",
+        )}
       >
-        {/* Logo mark */}
-        <Link href="/" style={{ textDecoration: "none", display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ color: "var(--tv-primary)", fontWeight: 700, fontFamily: "var(--font-mono)", fontSize: 16 }}>
-            [AK]
-          </span>
-          <span style={{ fontWeight: 600, color: "var(--tv-secondary)", fontSize: 14 }}>ArKex</span>
-          <span style={{ fontSize: 11, color: "var(--tv-muted)", fontFamily: "var(--font-mono)" }}>2.0</span>
-        </Link>
-
-        {/* Desktop nav */}
-        <nav
-          style={{ display: "flex", alignItems: "center", gap: 4 }}
-          aria-label="main navigation"
-        >
-          {NAV.map((item) => {
-            const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                style={{
-                  position: "relative",
-                  padding: "0 12px",
-                  height: 56,
-                  display: "flex",
-                  alignItems: "center",
-                  textDecoration: "none",
-                  fontSize: "var(--text-body-sm)",
-                  fontWeight: active ? 600 : 400,
-                  color: active ? "var(--tv-secondary)" : "var(--tv-muted)",
-                  transition: "color 0.18s",
-                }}
-              >
-                {item.label}
-                {active && (
-                  <motion.span
-                    layoutId="tv-tab-indicator"
-                    style={{
-                      position: "absolute",
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      height: 2,
-                      background: "var(--tv-primary)",
-                    }}
-                    transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-                  />
-                )}
-              </Link>
-            );
-          })}
-        </nav>
-      </header>
-
-      {/* Page Content */}
-      <main style={{ flex: 1, background: "var(--tv-neutral)" }}>
-        {children}
-      </main>
-
-      {/* Mobile Bottom Nav */}
-      <nav
-        aria-label="mobile navigation"
-        style={{
-          display: "none",
-          position: "fixed",
-          bottom: 0,
-          left: 0,
-          right: 0,
-          background: "var(--tv-neutral)",
-          borderTop: "1px solid var(--tv-border)",
-          padding: "8px 0",
-          zIndex: 100,
-        }}
-        className="mobile-nav"
-      >
-        {NAV.slice(0, 5).map((item) => {
-          const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                flex: 1,
-                padding: "4px 0",
-                fontSize: 11,
-                fontWeight: active ? 600 : 400,
-                color: active ? "var(--tv-primary)" : "var(--tv-muted)",
-                textDecoration: "none",
-              }}
-            >
-              {item.label}
-            </Link>
-          );
-        })}
-      </nav>
-
-      <style>{`
-        @media (max-width: 767px) {
-          header nav { display: none !important; }
-          .mobile-nav { display: flex !important; }
-          main { padding-bottom: 60px; }
-        }
-      `}</style>
-    </div>
+        <MainContent>{children}</MainContent>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

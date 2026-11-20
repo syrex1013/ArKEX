@@ -53,6 +53,13 @@ func NewManager(proxyAddr, scratchBase, networkID string) (*Manager, error) {
 	}, nil
 }
 
+// SetProxyAddr updates the proxy address containers created afterwards use for
+// their HTTP(S)_PROXY/ALL_PROXY env. Existing containers keep the address they
+// were created with.
+func (m *Manager) SetProxyAddr(addr string) {
+	m.proxyAddr = addr
+}
+
 // Create allocates an ephemeral container for the given intent.
 func (m *Manager) Create(ctx context.Context, spec *ContainerSpec) (*Container, error) {
 	if spec.ScratchMB <= 0 {
@@ -79,6 +86,7 @@ func (m *Manager) Create(ctx context.Context, spec *ContainerSpec) (*Container, 
 		"--tmpfs", fmt.Sprintf("%s:size=%dm,mode=750", ScratchMountPath, spec.ScratchMB),
 		"-e", fmt.Sprintf("HTTP_PROXY=http://%s", m.proxyAddr),
 		"-e", fmt.Sprintf("HTTPS_PROXY=http://%s", m.proxyAddr),
+		"-e", fmt.Sprintf("ALL_PROXY=http://%s", m.proxyAddr),
 		"-e", "ARKEX_INTENT_ID=" + spec.IntentID,
 		"-e", "ARKEX_ENGAGEMENT_ID=" + spec.EngagementID,
 	}
@@ -127,4 +135,3 @@ func (m *Manager) Destroy(ctx context.Context, containerID string) error {
 	slog.Debug("sandbox destroyed", "container_id", containerID[:min(12, len(containerID))])
 	return nil
 }
-

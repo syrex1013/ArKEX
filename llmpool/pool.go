@@ -1,344 +1,359 @@
-// Package llmpool implements multi-tier LLM routing with refusal detection
-// and automatic failover to Tier 3 (local/uncensored) models.
 package llmpool
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
-	"net/http"
+	"iter"
+	"log"
+	"regexp"
+	"strconv"
 	"strings"
-	"time"
+	"sync/atomic"
+	"unicode/utf8"
+
+	"github.com/Autumn-27/norma/llm"
 )
 
-// Tier constants
-const (
-	TierFast      = 1 // Recon triage, JS parsing, compaction
-	TierFrontier  = 2 // Planner strategy, exploit chaining, verification
-	TierUncensored = 3 // Local Ollama/vLLM, refusal failover
-)
-
-// Pool routes completions across Tier 1/2/3 providers with failover.
-type Pool struct {
-	providers []*Provider
-	httpCli   *http.Client
-}
-
-type Provider struct {
-	ID       string
-	Name     string
-	Tier     int
-	Endpoint string
+// Member is one LLM profile in the chain, already built into a provider (wrapped
+// with the recorder by the caller, so a failed attempt is still recorded under
+// its own profile name).
+type Member struct {
+	ID       int64  // llm_profiles.id
+	Name     string // profile name, for logs / UI
 	Model    string
-	APIKey   string
-	Enabled  bool
+	Format   string // "anthropic" | "openai"
+	Priority int    // the profile's configured priority (display only)
+	Active   bool   // is_default (display only)
+	// Rank is the ordering key the caller assigned: higher goes first, and members
+	// sharing a Rank take turns leading (load-spreading across duplicate keys).
+	// The caller encodes "active profile heads the chain" as a Rank above every
+	// user-settable priority, so this type needs no policy of its own.
+	Rank int
+	// WindowTokens is the profile's context window in tokens. A member whose
+	// window can't hold the request is skipped rather than made to fail on it.
+	WindowTokens int
+	Prov         llm.Provider
 }
 
-func New(providers []*Provider) *Pool {
-	return &Pool{
-		providers: providers,
-		httpCli:   &http.Client{Timeout: 120 * time.Second},
+// RankActive is the Rank the caller gives the chain head (the active profile, or
+// an explicitly bound one) so it always outranks any configured priority.
+const RankActive = int(^uint(0)>>1) - 1
+
+// ErrExhausted is returned when every member of the chain failed.
+var ErrExhausted = errors.New("LLM failover: all profiles unavailable")
+
+// Pool is an llm.Provider that fails over across an ordered chain of members.
+// It is safe for concurrent use: members are immutable after construction and
+// all mutable state lives in the shared Registry.
+type Pool struct {
+	members []*Member // in chain order (active first, then priority DESC)
+	health  *Registry
+	rr      atomic.Uint64 // rotates the starting point within an equal-priority group
+}
+
+// New builds a Pool over members (already in chain order). Returns nil when the
+// chain is empty. A single-member chain is still a valid Pool — it just behaves
+// exactly like the bare provider.
+func New(members []*Member, health *Registry) *Pool {
+	if len(members) == 0 {
+		return nil
 	}
-}
-
-// DefaultProviders returns a standard 3-tier configuration.
-func DefaultProviders(anthropicKey, openaiKey, ollamaURL string) []*Provider {
-	return []*Provider{
-		{
-			ID: "claude-haiku", Tier: TierFast,
-			Endpoint: "https://api.anthropic.com/v1/messages",
-			Model: "claude-haiku-5-5", APIKey: anthropicKey, Enabled: true,
-		},
-		{
-			ID: "claude-sonnet", Tier: TierFrontier,
-			Endpoint: "https://api.anthropic.com/v1/messages",
-			Model: "claude-sonnet-5-5", APIKey: anthropicKey, Enabled: true,
-		},
-		{
-			ID: "ollama-local", Tier: TierUncensored,
-			Endpoint: ollamaURL + "/api/chat",
-			Model: "llama3.2", Enabled: ollamaURL != "",
-		},
+	if health == nil {
+		health = NewRegistry(nil, nil)
 	}
+	return &Pool{members: members, health: health}
 }
 
-// CompletionRequest is a request to complete an LLM conversation.
-type CompletionRequest struct {
-	SessionID string
-	IntentID  string
-	Tier      int
-	Messages  []Message
-	MaxTokens int
-	System    string
-}
+// Members returns the chain in order (read-only).
+func (p *Pool) Members() []*Member { return p.members }
 
-// Message is a single conversation turn.
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
+// Head returns the first member of the chain.
+func (p *Pool) Head() *Member { return p.members[0] }
 
-// CompletionResponse is the LLM completion result.
-type CompletionResponse struct {
-	Content    string
-	TokensIn   int
-	TokensOut  int
-	Model      string
-	ProviderID string
-	Refusal    bool
-}
-
-// Complete routes a completion request through the tier hierarchy with 5-layer retry.
-func (p *Pool) Complete(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
-	// Find candidates for the requested tier
-	for tier := req.Tier; tier <= TierUncensored; tier++ {
-		for _, prov := range p.providers {
-			if prov.Tier != tier || !prov.Enabled {
-				continue
+// Stream implements llm.Provider with failover.
+//
+// The one hard rule: a member may only be abandoned BEFORE it has yielded any
+// event. Once text or a tool_use has reached the caller, re-sending the same
+// request to another model would duplicate output and corrupt the conversation
+// history — so a mid-stream failure is surfaced as-is and left to the agent
+// harness's resume logic. Fortunately the failures this exists for (402 no
+// credit, 401 bad key, 429, 5xx) all surface during request establishment,
+// before the body is read, so they always land in the safe window.
+func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	order := p.order(req)
+	return func(yield func(llm.StreamEvent, error) bool) {
+		var lastErr error
+		for i, m := range order {
+			emitted := false
+			var failed error
+			var buf []llm.StreamEvent
+			var stopReason string
+			var text strings.Builder
+			hasTool := false
+			for ev, err := range m.Prov.Stream(ctx, req) {
+				if err != nil && !emitted && len(buf) == 0 && shouldFailover(ctx, err) {
+					failed = err
+					break // safe window: nothing reached the caller yet
+				}
+				if err != nil {
+					// Flush any buffered prelude, then surface the error.
+					for _, be := range buf {
+						if !yield(be, nil) {
+							return
+						}
+					}
+					emitted = true
+					_ = yield(ev, err)
+					return
+				}
+				if ev.StopReason != "" {
+					stopReason = ev.StopReason
+				}
+				if ev.Type == llm.SETextDelta && ev.Text != "" {
+					text.WriteString(ev.Text)
+				}
+				if ev.Type == llm.SEToolUseStart {
+					hasTool = true
+				}
+				// Hold events until real content/tool appears, so a pure refusal
+				// can still failover to Tier-3 without corrupting the transcript.
+				if !emitted {
+					buf = append(buf, ev)
+					if hasTool || text.Len() > 0 {
+						for _, be := range buf {
+							if !yield(be, nil) {
+								return
+							}
+						}
+						buf = nil
+						emitted = true
+					}
+					continue
+				}
+				if !yield(ev, nil) {
+					return
+				}
 			}
-			resp, err := p.completeWithRetry(ctx, prov, req, 5)
-			if err != nil {
-				slog.Warn("provider failed", "provider", prov.ID, "err", err)
-				continue
+			if failed == nil && !emitted {
+				if ref := RefusalFromComplete(llm.Message{}, stopReason); ref != nil || LooksLikeRefusalText(text.String()) {
+					failed = ErrProviderRefusal
+					buf = nil
+				} else {
+					for _, be := range buf {
+						if !yield(be, nil) {
+							return
+						}
+					}
+					p.health.RecordCall(ctx, m.ID, true, false, nil)
+					return
+				}
 			}
-			if isRefusal(resp.Content) {
-				slog.Warn("refusal detected, escalating tier",
-					"provider", prov.ID, "tier", tier)
-				resp.Refusal = true
-				// Try next tier
-				break
+			if failed == nil {
+				p.health.RecordCall(ctx, m.ID, true, false, nil) // completed: Pass
+				return
 			}
-			return resp, nil
+			lastErr = failed
+			if tripped, msg := p.health.RecordCall(ctx, m.ID, true, false, failed); tripped {
+				log.Printf("[llmpool] profile %q(%s) breaker tripped: %s", m.Name, m.Model, msg)
+			}
+			if i+1 < len(order) {
+				n := order[i+1]
+				log.Printf("[llmpool] LLM failover: %q(%s) → %q(%s), reason: %s",
+					m.Name, m.Model, n.Name, n.Model, trimErr(failed))
+			}
 		}
+		if lastErr == nil {
+			lastErr = ErrExhausted
+		}
+		log.Printf("[llmpool] failover chain exhausted (all %d profiles failed), last error: %s", len(order), trimErr(lastErr))
+		yield(llm.StreamEvent{}, fmt.Errorf("%w: %v", ErrExhausted, lastErr))
 	}
-	return nil, fmt.Errorf("all providers failed or refused")
 }
 
-// completeWithRetry attempts completion up to maxRetries times (5-layer retry stack).
-func (p *Pool) completeWithRetry(ctx context.Context, prov *Provider, req *CompletionRequest, maxRetries int) (*CompletionResponse, error) {
+// Complete implements llm.Provider with failover for non-streaming calls. A
+// non-streaming request is atomic — it never delivers partial output — so every
+// failover-eligible failure lands in the safe window and the next member can be
+// tried without risk of duplicated output. Mirrors Stream's health-tripping and
+// chain-exhaustion behavior.
+func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	order := p.order(req)
 	var lastErr error
-	delays := []time.Duration{0, 1*time.Second, 2*time.Second, 4*time.Second, 8*time.Second}
-	for i := 0; i < maxRetries; i++ {
-		if i > 0 && i < len(delays) {
-			select {
-			case <-time.After(delays[i]):
-			case <-ctx.Done():
-				return nil, ctx.Err()
+	for i, m := range order {
+		msg, sr, usage, err := m.Prov.Complete(ctx, req)
+		if err == nil {
+			if ref := RefusalFromComplete(msg, sr); ref != nil {
+				err = ref
+			} else {
+				p.health.RecordCall(ctx, m.ID, false, false, nil) // Pass
+				return msg, sr, usage, nil
 			}
 		}
-		resp, err := p.doComplete(ctx, prov, req)
-		if err == nil {
-			return resp, nil
+		if !shouldFailover(ctx, err) {
+			// Non-failover error (e.g. ctx cancel, deterministic 4xx): surface as-is
+			// without tripping health. RecordCall clears the state on an atomic
+			// call, matching the historical Pass here.
+			p.health.RecordCall(ctx, m.ID, false, false, err)
+			return llm.Message{}, "", llm.Usage{}, err
 		}
 		lastErr = err
-		// Don't retry context cancellations
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		if tripped, msg := p.health.RecordCall(ctx, m.ID, false, false, err); tripped {
+			log.Printf("[llmpool] profile %q(%s) breaker tripped: %s", m.Name, m.Model, msg)
+		}
+		if i+1 < len(order) {
+			n := order[i+1]
+			log.Printf("[llmpool] LLM failover: %q(%s) → %q(%s), reason: %s",
+				m.Name, m.Model, n.Name, n.Model, trimErr(err))
 		}
 	}
-	return nil, fmt.Errorf("after %d retries: %w", maxRetries, lastErr)
+	if lastErr == nil {
+		lastErr = ErrExhausted
+	}
+	log.Printf("[llmpool] failover chain exhausted (all %d profiles failed), last error: %s", len(order), trimErr(lastErr))
+	return llm.Message{}, "", llm.Usage{}, fmt.Errorf("%w: %v", ErrExhausted, lastErr)
 }
 
-// doComplete executes a single completion call to the provider.
-func (p *Pool) doComplete(ctx context.Context, prov *Provider, req *CompletionRequest) (*CompletionResponse, error) {
-	start := time.Now()
-
-	// Build provider-specific request body
-	var body []byte
-	var err error
-	if strings.Contains(prov.Endpoint, "anthropic") {
-		body, err = p.buildAnthropicRequest(req, prov.Model)
-	} else {
-		body, err = p.buildOllamaRequest(req, prov.Model)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", prov.Endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if prov.APIKey != "" {
-		if strings.Contains(prov.Endpoint, "anthropic") {
-			httpReq.Header.Set("x-api-key", prov.APIKey)
-			httpReq.Header.Set("anthropic-version", "2023-06-01")
-		} else {
-			httpReq.Header.Set("Authorization", "Bearer "+prov.APIKey)
-		}
-	}
-
-	resp, err := p.httpCli.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("http %d from %s", resp.StatusCode, prov.ID)
-	}
-
-	latency := time.Since(start)
-	_ = latency
-
-	if strings.Contains(prov.Endpoint, "anthropic") {
-		return p.parseAnthropicResponse(resp, prov.ID, prov.Model)
-	}
-	return p.parseOllamaResponse(resp, prov.ID, prov.Model)
-}
-
-func (p *Pool) buildAnthropicRequest(req *CompletionRequest, model string) ([]byte, error) {
-	type anthMsg struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	}
-	type anthReq struct {
-		Model     string    `json:"model"`
-		MaxTokens int       `json:"max_tokens"`
-		System    string    `json:"system,omitempty"`
-		Messages  []anthMsg `json:"messages"`
-	}
-	ar := anthReq{Model: model, MaxTokens: req.MaxTokens, System: req.System}
-	for _, m := range req.Messages {
-		if m.Role != "system" {
-			ar.Messages = append(ar.Messages, anthMsg{Role: m.Role, Content: m.Content})
-		} else if ar.System == "" {
-			ar.System = m.Content
-		}
-	}
-	return json.Marshal(ar)
-}
-
-func (p *Pool) parseAnthropicResponse(resp *http.Response, provID, model string) (*CompletionResponse, error) {
-	var ar struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-		StopReason string `json:"stop_reason"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
-		return nil, err
-	}
-	var text string
-	for _, c := range ar.Content {
-		if c.Type == "text" {
-			text += c.Text
-		}
-	}
-	// Detect safety refusals via stop_reason
-	if ar.StopReason == "content_filtered" || ar.StopReason == "refusal" {
-		text = ""
-	}
-	return &CompletionResponse{
-		Content:    text,
-		TokensIn:   ar.Usage.InputTokens,
-		TokensOut:  ar.Usage.OutputTokens,
-		Model:      model,
-		ProviderID: provID,
-	}, nil
-}
-
-func (p *Pool) buildOllamaRequest(req *CompletionRequest, model string) ([]byte, error) {
-	type ollamaReq struct {
-		Model    string    `json:"model"`
-		Messages []Message `json:"messages"`
-		Stream   bool      `json:"stream"`
-	}
-	or := ollamaReq{Model: model, Stream: false, Messages: req.Messages}
-	return json.Marshal(or)
-}
-
-func (p *Pool) parseOllamaResponse(resp *http.Response, provID, model string) (*CompletionResponse, error) {
-	var or struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-		EvalCount  int `json:"eval_count"`
-		PromptEvalCount int `json:"prompt_eval_count"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&or); err != nil {
-		return nil, err
-	}
-	return &CompletionResponse{
-		Content:    or.Message.Content,
-		TokensIn:   or.PromptEvalCount,
-		TokensOut:  or.EvalCount,
-		Model:      model,
-		ProviderID: provID,
-	}, nil
-}
-
-// isRefusal detects safety refusal phrases in LLM responses.
-func isRefusal(content string) bool {
-	content = strings.ToLower(content)
-	refusalPhrases := []string{
-		"i cannot help with",
-		"i'm not able to",
-		"i can't assist with",
-		"as an ai, i cannot",
-		"i don't feel comfortable",
-		"this request violates",
-		"i'm designed to be",
-		"i must decline",
-		"harmful or illegal",
-		"content_filter",
-	}
-	for _, phrase := range refusalPhrases {
-		if strings.Contains(content, phrase) {
-			return true
-		}
-	}
-	return content == "" // empty = likely filtered
-}
-
-// HealthCheck checks all providers and returns a summary.
-func (p *Pool) HealthCheck(ctx context.Context) []ProviderHealth {
-	var results []ProviderHealth
-	for _, prov := range p.providers {
-		h := ProviderHealth{
-			ProviderID: prov.ID,
-			Tier:       prov.Tier,
-			Model:      prov.Model,
-			Enabled:    prov.Enabled,
-		}
-		if !prov.Enabled {
-			results = append(results, h)
+// order picks the members to try, in order: skip those in a cooling-off window
+// and those whose context window can't hold this request, then rotate within each
+// equal-priority group so same-priority profiles share the load. Never returns an
+// empty slice — if everything is filtered out, the head of the chain is tried
+// anyway, since stalling the engine is worse than one more failed request.
+func (p *Pool) order(req llm.CompletionRequest) []*Member {
+	est := estimateTokens(req)
+	var open []*Member
+	for _, m := range p.members {
+		if p.health.IsOpen(m.ID) {
 			continue
 		}
-		start := time.Now()
-		req := &CompletionRequest{
-			Tier:      prov.Tier,
-			Messages:  []Message{{Role: "user", Content: "Reply with one word: OK"}},
-			MaxTokens: 10,
+		if m.WindowTokens > 0 && est > m.WindowTokens {
+			continue // would 400 on length — not a useful failover target
 		}
-		resp, err := p.doComplete(ctx, prov, req)
-		h.LatencyMS = int(time.Since(start).Milliseconds())
-		if err != nil {
-			h.Error = err.Error()
-		} else {
-			h.Healthy = true
-			h.Refusal = isRefusal(resp.Content)
-		}
-		results = append(results, h)
+		open = append(open, m)
 	}
-	return results
+	if len(open) == 0 {
+		return p.members[:1] // last resort: probe the head rather than stall
+	}
+	return rotateGroups(open, p.rr.Add(1)-1)
 }
 
-type ProviderHealth struct {
-	ProviderID string
-	Tier       int
-	Model      string
-	Enabled    bool
-	Healthy    bool
-	Refusal    bool
-	LatencyMS  int
-	Error      string
+// rotateGroups rotates each run of equal-ranked members by n, so profiles sharing
+// a priority take turns going first (free load-spreading across duplicate keys).
+// The chain head has its own Rank and always stays at the front.
+func rotateGroups(in []*Member, n uint64) []*Member {
+	out := make([]*Member, 0, len(in))
+	for i := 0; i < len(in); {
+		j := i + 1
+		for j < len(in) && in[j].Rank == in[i].Rank {
+			j++
+		}
+		g := in[i:j]
+		if len(g) > 1 {
+			off := int(n % uint64(len(g)))
+			for k := range g {
+				out = append(out, g[(k+off)%len(g)])
+			}
+		} else {
+			out = append(out, g...)
+		}
+		i = j
+	}
+	return out
+}
+
+// statusRe pulls the HTTP status out of the SDK's error text, which is formatted
+// as "<prefix>: status <code>: <body>" (norma/llm/retry.go). The SDK exposes no
+// typed error, so the string is what we have.
+var statusRe = regexp.MustCompile(`status (\d{3})`)
+
+// statusOf returns the HTTP status carried by err, or 0 if it isn't one.
+func statusOf(err error) int {
+	m := statusRe.FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0
+	}
+	code, _ := strconv.Atoi(m[1])
+	return code
+}
+
+// shouldFailover reports whether err justifies trying the next profile.
+//
+// Never fails over on context cancellation — that's the user stopping a task or a
+// task-level timeout, and burning a backup key on it would both waste credit and
+// pollute the run's termination diagnosis. Never on 400 either: a malformed or
+// over-long request fails identically everywhere.
+func shouldFailover(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, ErrProviderRefusal) {
+		return true // Tier-3 local/uncensored may still serve authorized pentest turns
+	}
+	switch code := statusOf(err); {
+	case code == 0:
+		return true // no status → transport-level failure (reset / DNS / timeout)
+	case code == 400:
+		return false // bad or over-long request: identical everywhere
+	case code == 401, code == 402, code == 403, code == 404, code == 408, code == 429:
+		return true
+	case code >= 500:
+		return true
+	}
+	return false
+}
+
+// isHardFailure reports whether the failure is deterministic (the profile will
+// keep failing until a human fixes it) rather than transient. Hard failures open
+// the breaker on the first occurrence.
+func isHardFailure(err error) bool {
+	switch statusOf(err) {
+	case 401, 402, 403, 404:
+		return true
+	}
+	return false
+}
+
+// trimErr shortens an error for logs/UI — provider bodies can be long.
+func trimErr(err error) string {
+	s := strings.TrimSpace(strings.ReplaceAll(err.Error(), "\n", " "))
+	if len(s) > 300 {
+		cut := 300
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
+	}
+	return s
+}
+
+// estimateTokens roughly sizes a request so members whose context window clearly
+// can't hold it are skipped. Deliberately crude (~3.5 chars/token) and biased to
+// over-estimate slightly; it only needs to tell "fits" from "nowhere near".
+func estimateTokens(req llm.CompletionRequest) int {
+	n := 0
+	for _, s := range req.System {
+		n += len(s)
+	}
+	for _, m := range req.Messages {
+		n += blocksLen(m.Content)
+	}
+	for _, t := range req.Tools {
+		// InputSchema is a decoded map, so its serialized size isn't available
+		// cheaply — charge a flat ~120 chars per top-level property instead.
+		n += len(t.Name) + len(t.Description) + len(t.InputSchema)*120
+	}
+	return n * 2 / 7 // ≈ len/3.5
+}
+
+func blocksLen(bs []llm.ContentBlock) int {
+	n := 0
+	for _, b := range bs {
+		n += len(b.Text) + len(b.Thinking) + len(b.Input) + len(b.Name)
+		if len(b.Content) > 0 {
+			n += blocksLen(b.Content)
+		}
+	}
+	return n
 }

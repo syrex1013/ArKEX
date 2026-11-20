@@ -28,14 +28,14 @@ const (
 
 // ProbeResult holds the outcome of one desync probe.
 type ProbeResult struct {
-	Kind        ProbeKind
-	Target      string
-	Vulnerable  bool
-	Evidence    string
-	StatusFirst int
-	StatusGadget int
-	Latency     time.Duration
-	Error       string
+	Kind         ProbeKind     `json:"kind"`
+	Target       string        `json:"target"`
+	Vulnerable   bool          `json:"vulnerable"`
+	Evidence     string        `json:"evidence"`
+	StatusFirst  int           `json:"status_first"`
+	StatusGadget int           `json:"status_gadget"`
+	Latency      time.Duration `json:"latency_ns"`
+	Error        string        `json:"error,omitempty"`
 }
 
 // Engine probes HTTP desync / smuggling vulnerabilities.

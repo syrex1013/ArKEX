@@ -1,166 +1,454 @@
-// Package llmrec implements delta-encoded LLM conversation recording.
-// Never stores O(N²) full histories — only appends new turns.
+// Package llmrec implements a recording decorator for llm.Provider. It intercepts
+// every Stream call, captures the full request and accumulated response, and
+// persists them to PostgreSQL for later inspection.
 package llmrec
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
+	"encoding/json"
+	"iter"
+	"log"
+	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/threatvector/arkex/storage"
+	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/storage"
+	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/transcript"
 )
 
-// Recorder appends LLM turns to llm_messages without duplicating prior turns.
+type taskIDContextKey struct{}
+type workerContextKey struct{}
+
+// WithTaskID attaches the owning task registry id to an LLM call. Session ids
+// are based on exploration ids, which are not interchangeable with task ids.
+func WithTaskID(ctx context.Context, taskID string) context.Context {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, taskIDContextKey{}, taskID)
+}
+
+// TaskIDFrom returns the explicit task registry id attached by the task runtime.
+func TaskIDFrom(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	taskID, _ := ctx.Value(taskIDContextKey{}).(string)
+	return strings.TrimSpace(taskID)
+}
+
+// WithWorker overrides the agent-lane ("worker") label for an LLM call. The lane
+// is normally parsed from the transcript session id (exp<N>-<role>); calls made
+// outside the engine's worker/planner sessions — e.g. the intercept fallback judge
+// — carry no such session, so they attach their lane explicitly here. This lets the
+// usage ledger single out that spend (worker='judge') for the config page.
+func WithWorker(ctx context.Context, worker string) context.Context {
+	worker = strings.TrimSpace(worker)
+	if worker == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, workerContextKey{}, worker)
+}
+
+// workerFrom returns the explicit lane override, or "" when none is set.
+func workerFrom(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	worker, _ := ctx.Value(workerContextKey{}).(string)
+	return strings.TrimSpace(worker)
+}
+
+type usageSinkContextKey struct{}
+
+// WithUsageSink attaches a callback that receives the usage of every metered
+// call made under ctx — the same value, at the same point, as the llm_usage row.
+// The task runtime uses it to meter run budgets.
+func WithUsageSink(ctx context.Context, sink func(llm.Usage)) context.Context {
+	return context.WithValue(ctx, usageSinkContextKey{}, sink)
+}
+
+type stopSinkContextKey struct{}
+
+// WithStopSink attaches a callback that receives the stop reason of every call
+// made under ctx that completes normally, once per call, after the provider's
+// last event ("" when the provider reported none). The harness keeps the stop
+// reason only long enough to decide whether a turn used tools, so a host that
+// must tell a provider refusal (Anthropic stop_reason "refusal", or
+// finish_reason "content_filter" on OpenAI-compatible endpoints) from an
+// ordinary end of turn observes it here.
+func WithStopSink(ctx context.Context, sink func(stopReason string)) context.Context {
+	return context.WithValue(ctx, stopSinkContextKey{}, sink)
+}
+
+// reportStop hands stopReason to the ctx stop sink, if one is attached.
+func reportStop(ctx context.Context, stopReason string) {
+	if sink, _ := ctx.Value(stopSinkContextKey{}).(func(string)); sink != nil {
+		sink(stopReason)
+	}
+}
+
+// Recorder wraps an llm.Provider and records every completion call.
 type Recorder struct {
-	db    *pgxpool.Pool
-	codec *storage.Codec
+	inner llm.Provider
+	pg    *db.DB
+	model string // model name (from config, not in CompletionRequest)
+	prof  string // LLM profile name (from llm_profiles)
+	// thinkingType / reasoningEffort are the config-level thinking params (thinking
+	// toggle / thinking effort). norma's buildBody() injects them from the provider
+	// config into the actual HTTP body; they never appear on CompletionRequest, so
+	// the Recorder carries its own copy here and writes it into the recording.
+	thinkingType    string
+	reasoningEffort string
+	enabled         func() bool // reports whether recording is currently on; nil = always record
 }
 
-func New(db *pgxpool.Pool) *Recorder {
-	return &Recorder{db: db, codec: storage.DefaultCodec()}
-}
-
-// Message is a single LLM turn to record.
-type Message struct {
-	Role    string // "system" | "user" | "assistant" | "tool"
-	Content []byte // raw (uncompressed) content
-}
-
-// AppendTurn appends one new turn to the session's message log.
-// It only writes the NEW turn — it never re-serializes prior turns.
-func (r *Recorder) AppendTurn(ctx context.Context, sessionID string, turnSeq int, msg *Message) error {
-	compressed, sha, err := r.codec.Compress(msg.Content)
-	if err != nil {
-		return fmt.Errorf("compress: %w", err)
+// Wrap returns a Provider that records calls to pg when enabled() reports true.
+// profName is the LLM profile name (e.g. "default"); may be empty. thinkingType /
+// reasoningEffort are the config-level thinking params actually sent to the API
+// (empty = not sent). A nil enabled predicate records unconditionally.
+func Wrap(inner llm.Provider, pg *db.DB, model, profName, thinkingType, reasoningEffort string, enabled func() bool) *Recorder {
+	return &Recorder{
+		inner: inner, pg: pg, model: model, prof: profName,
+		thinkingType: thinkingType, reasoningEffort: reasoningEffort, enabled: enabled,
 	}
-	_, err = r.db.Exec(ctx, `
-		INSERT INTO llm_messages (session_id, turn_seq, role, content_zstd, sha256, token_count)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (session_id, turn_seq) DO NOTHING`,
-		sessionID, turnSeq, msg.Role, compressed, sha, estimateTokens(msg.Content),
-	)
-	if err != nil {
-		return fmt.Errorf("insert llm_message: %w", err)
-	}
-	return nil
 }
 
-// RecordCall stores metadata for one LLM API call (not the content — only refs).
-func (r *Recorder) RecordCall(ctx context.Context, c *CallRecord) error {
-	_, err := r.db.Exec(ctx, `
-		INSERT INTO llm_calls
-			(session_id, intent_id, up_to_seq, response_seq, model, profile_id,
-			 tokens_in, tokens_out, cache_read, latency_ms, status, error)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		c.SessionID, c.IntentID, c.UpToSeq, c.ResponseSeq, c.Model, c.ProfileID,
-		c.TokensIn, c.TokensOut, c.CacheRead, c.LatencyMS, c.Status, c.Error,
-	)
-	return err
+// parseSession extracts task id and worker role from session strings like
+// "exp1-worker-i3" → ("1", "worker") or "exp2-planner" → ("2", "planner").
+func parseSession(s string) (taskID, worker string) {
+	// format: exp<N>-<role>[-suffix]
+	if !strings.HasPrefix(s, "exp") {
+		return "", ""
+	}
+	rest := s[3:] // after "exp"
+	// split task number
+	i := strings.IndexByte(rest, '-')
+	if i < 0 {
+		return rest, ""
+	}
+	taskID = rest[:i]
+	rest = rest[i+1:]
+	// worker role is up to the next '-' (e.g. "worker" from "worker-i3")
+	if j := strings.IndexByte(rest, '-'); j >= 0 {
+		worker = rest[:j]
+	} else {
+		worker = rest
+	}
+	return taskID, worker
 }
 
-// ReadSession reconstructs a session's messages up to and including maxSeq.
-func (r *Recorder) ReadSession(ctx context.Context, sessionID string, maxSeq int) ([]*Message, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT role, content_zstd
-		FROM llm_messages
-		WHERE session_id = $1 AND turn_seq <= $2
-		ORDER BY turn_seq ASC`,
-		sessionID, maxSeq,
-	)
-	if err != nil {
-		return nil, err
+// Stream implements llm.Provider. It delegates to the inner provider, accumulates
+// the streamed events to reconstruct the response, and records the full exchange.
+//
+// The session identifier (e.g. "exp1-worker-i3") is carried on ctx by the norma
+// harness via transcript.WithSessionID; reading it per-call is race-free even when
+// planner and multiple workers share one Recorder instance.
+func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	// Body recording (the heavy debug trace: full request/response) is gated by the
+	// llm_record setting. Lightweight usage metering always runs — it powers token
+	// stats and must be complete even for interrupted/failed runs, so it is NOT
+	// gated. Only body serialization + response accumulation are skipped when off.
+	recordBodies := r.enabled == nil || r.enabled()
+	start := time.Now()
+	session := transcript.SessionIDFrom(ctx)
+	parsedID, worker := parseSession(session)
+	if ov := workerFrom(ctx); ov != "" {
+		worker = ov
 	}
-	defer rows.Close()
+	expID := db.ParseExpID(parsedID)
+	taskID := TaskIDFrom(ctx)
+	if taskID == "" {
+		// Backward compatibility for non-task callers. For task calls, the task
+		// runtime always supplies the registry id explicitly.
+		taskID = parsedID
+	}
 
-	var msgs []*Message
-	for rows.Next() {
-		var role string
-		var compressed []byte
-		if err := rows.Scan(&role, &compressed); err != nil {
-			return nil, err
+	// Serialize the request only when storing bodies (this is the expensive part).
+	// Alongside it, attach a Capture so the HTTP transport can hand back the
+	// untouched wire bodies — the normalized view below cannot reconstruct them
+	// (tool schemas are dropped, tool_use blocks never reach this layer, and the
+	// SSE framing is already decoded). See capture.go.
+	reqBody := ""
+	var capt *Capture
+	if recordBodies {
+		reqBody = r.serializeRequest(req)
+		ctx, capt = NewCapture(ctx)
+	}
+
+	return func(yield func(llm.StreamEvent, error) bool) {
+		var (
+			textBuf     strings.Builder
+			thinkingBuf strings.Builder
+			usage       llm.Usage
+			stopReason  string
+			streamErr   error
+		)
+
+		finished := false
+		finish := func(err error) {
+			if finished {
+				return
+			}
+			finished = true
+			status := "ok"
+			if err != nil {
+				status = "error"
+			}
+			// Lightweight metering row — always written.
+			r.recordUsage(ctx, taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
+			// Heavy trace row — only when body recording is on.
+			if recordBodies {
+				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
+			}
 		}
-		content, err := r.codec.Decompress(compressed)
-		if err != nil {
-			return nil, fmt.Errorf("decompress turn: %w", err)
+		defer func() { finish(ctx.Err()) }()
+
+		for ev, err := range r.inner.Stream(ctx, req) {
+			if err != nil {
+				streamErr = err
+				finish(streamErr)
+				if !yield(ev, err) {
+					return
+				}
+				return
+			}
+			// Always track usage (cheap); accumulate text/thinking only for bodies.
+			// message_start carries the input side (input + cache) and is added.
+			// Since Norma v0.4.7 message_delta also echoes that input side next to the
+			// output, so it is folded with llm.Usage.MergeEcho (max on echoed fields,
+			// sum on output), as llm.Accumulator does; Add would count the input and
+			// cache twice. An output-only delta folds the same either way.
+			switch ev.Type {
+			case llm.SETextDelta:
+				if recordBodies {
+					textBuf.WriteString(ev.Text)
+				}
+			case llm.SEThinkingDelta:
+				if recordBodies {
+					thinkingBuf.WriteString(ev.Text)
+				}
+			case llm.SEMessageStart:
+				usage.Add(ev.Usage)
+			case llm.SEMessageDelta:
+				if ev.StopReason != "" {
+					stopReason = ev.StopReason
+				}
+				usage.MergeEcho(ev.Usage)
+			}
+			if !yield(ev, err) {
+				return
+			}
 		}
-		msgs = append(msgs, &Message{Role: role, Content: content})
+
+		// Stream completed normally.
+		reportStop(ctx, stopReason)
+		finish(streamErr)
 	}
-	return msgs, rows.Err()
 }
 
-// NextSeq returns the next turn_seq for sessionID (0 if no turns yet).
-func (r *Recorder) NextSeq(ctx context.Context, sessionID string) (int, error) {
-	var seq int
-	err := r.db.QueryRow(ctx,
-		`SELECT COALESCE(MAX(turn_seq)+1, 0) FROM llm_messages WHERE session_id = $1`,
-		sessionID,
-	).Scan(&seq)
-	return seq, err
-}
+// Complete implements the atomic completion path while preserving the same
+// usage metering, normalized body recording and raw wire capture as Stream.
+func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	recordBodies := r.enabled == nil || r.enabled()
+	start := time.Now()
+	session := transcript.SessionIDFrom(ctx)
+	parsedID, worker := parseSession(session)
+	if ov := workerFrom(ctx); ov != "" {
+		worker = ov
+	}
+	expID := db.ParseExpID(parsedID)
+	taskID := TaskIDFrom(ctx)
+	if taskID == "" {
+		taskID = parsedID
+	}
 
-// SessionStats returns token counts for a session.
-func (r *Recorder) SessionStats(ctx context.Context, sessionID string) (*SessionStats, error) {
-	var s SessionStats
-	err := r.db.QueryRow(ctx, `
-		SELECT
-			COUNT(*) AS turns,
-			COALESCE(SUM(token_count), 0) AS total_tokens,
-			COALESCE(SUM(octet_length(content_zstd)), 0) AS compressed_bytes,
-			COALESCE(SUM(token_count)*4, 0) AS estimated_raw_bytes
-		FROM llm_messages WHERE session_id = $1`,
-		sessionID,
-	).Scan(&s.Turns, &s.TotalTokens, &s.CompressedBytes, &s.EstimatedRawBytes)
+	reqBody := ""
+	var capt *Capture
+	if recordBodies {
+		reqBody = r.serializeRequest(req)
+		ctx, capt = NewCapture(ctx)
+	}
+
+	msg, stopReason, usage, err := r.inner.Complete(ctx, req)
+	status := "ok"
 	if err != nil {
-		return nil, err
+		status = "error"
+	} else {
+		reportStop(ctx, stopReason)
 	}
-	if s.EstimatedRawBytes > 0 {
-		s.CompressionRatio = float64(s.EstimatedRawBytes) / float64(s.CompressedBytes)
+	r.recordUsage(ctx, taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
+	if recordBodies {
+		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
 	}
-	return &s, nil
+	return msg, stopReason, usage, err
 }
 
-// PurgeOldRawDebug deletes raw debug captures older than 24h (called by Governor).
-func (r *Recorder) PurgeOldRawDebug(ctx context.Context) (int64, error) {
-	tag, err := r.db.Exec(ctx,
-		`DELETE FROM llm_raw_debug WHERE created_at < $1`,
-		time.Now().Add(-24*time.Hour),
-	)
+func thinkingText(msg llm.Message) string {
+	var b strings.Builder
+	for _, block := range msg.Content {
+		if block.Type == llm.BlockThinking && block.Thinking != "" {
+			b.WriteString(block.Thinking)
+		}
+	}
+	return b.String()
+}
+
+// recordUsage appends one lightweight metering row to llm_usage (no bodies). Skips
+// zero-token calls with no model, which carry nothing worth metering. The ctx
+// usage sink (if any) sees these calls even when no PostgreSQL recorder is set
+// (r.pg == nil), so a budget also counts calls that are not persisted.
+func (r *Recorder) recordUsage(ctx context.Context, taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status string) {
+	if r.model == "" && usage.InputTokens == 0 && usage.OutputTokens == 0 &&
+		usage.CacheReadTokens == 0 && usage.CacheWriteTokens == 0 {
+		return
+	}
+	if sink, _ := ctx.Value(usageSinkContextKey{}).(func(llm.Usage)); sink != nil {
+		sink(usage)
+	}
+	if r.pg == nil {
+		return
+	}
+	err := r.pg.InsertLLMUsage(&db.LLMUsage{
+		TaskID:        taskID,
+		ExplorationID: expID,
+		Worker:        worker,
+		Model:         r.model,
+		ProfileName:   r.prof,
+		LatencyMs:     latencyMs,
+		InputTokens:   usage.InputTokens,
+		OutputTokens:  usage.OutputTokens,
+		CacheRead:     usage.CacheReadTokens,
+		CacheWrite:    usage.CacheWriteTokens,
+		Status:        status,
+	})
 	if err != nil {
-		return 0, err
+		log.Printf("[llmusage] insert: %v", err)
 	}
-	n := tag.RowsAffected()
-	if n > 0 {
-		slog.Info("purged llm_raw_debug", "rows", n)
+}
+
+// record persists one LLM call to PostgreSQL before the provider stream returns.
+// Keeping the write inside the owning task operation means task deletion can
+// drain calls and then remove records without a late async insert recreating one.
+//
+// ArKex 2.0: stores a delta request (new turns only) + optional raw wire in the
+// 24h llm_raw_debug ring. Full O(N²) request_body + permanent raw_* are gone.
+func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, _ string, capt *Capture, start time.Time, text, thinking string, usage llm.Usage, stopReason string, streamErr error) {
+	latency := int(time.Since(start).Milliseconds())
+	status := "ok"
+	errMsg := ""
+	if streamErr != nil {
+		status = "error"
+		errMsg = streamErr.Error()
 	}
-	return n, nil
+
+	resp := map[string]any{
+		"text":        text,
+		"stop_reason": stopReason,
+		"usage": map[string]int{
+			"input_tokens":       usage.InputTokens,
+			"output_tokens":      usage.OutputTokens,
+			"cache_read_tokens":  usage.CacheReadTokens,
+			"cache_write_tokens": usage.CacheWriteTokens,
+		},
+	}
+	if thinking != "" {
+		resp["thinking"] = thinking
+	}
+	respBody, _ := json.Marshal(resp)
+
+	deltaBody, newPlain, _, to := deltaRequestBody(session, req, r.thinkingType, r.reasoningEffort)
+	reqSHA := storage.SHA256Hex([]byte(deltaBody))
+
+	if len(newPlain) > 0 && r.pg != nil {
+		comp, sha, err := storage.DefaultCodec().Compress(newPlain)
+		if err == nil {
+			seq, qerr := r.pg.NextLLMMessageSeq(session)
+			if qerr != nil {
+				seq = to
+			}
+			if err := r.pg.InsertLLMMessage(&db.LLMMessage{
+				SessionID: session,
+				TurnSeq:   seq,
+				Role:      "delta",
+				Content:   comp,
+				SHA256:    sha,
+			}); err != nil {
+				log.Printf("[llmrec] llm_messages insert: %v", err)
+			}
+		}
+	}
+	setSeq(session, to)
+
+	rec := &db.LLMRecord{
+		SessionID:    session,
+		TaskID:       taskID,
+		Worker:       worker,
+		Model:        r.model,
+		ProfileName:  r.prof,
+		LatencyMs:    latency,
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		CacheRead:    usage.CacheReadTokens,
+		CacheWrite:   usage.CacheWriteTokens,
+		Status:       status,
+		Error:        errMsg,
+		RequestBody:  deltaBody,
+		ResponseBody: string(respBody),
+	}
+
+	if db.LLMRawDebugEnabled() && capt != nil {
+		rawReq, rawResp := capt.RawRequest(), capt.RawResponse()
+		if rawReq != "" || rawResp != "" {
+			if err := r.pg.InsertLLMRawDebug(session, taskID, rawReq, rawResp); err != nil {
+				log.Printf("[llmrec] llm_raw_debug insert: %v", err)
+			}
+		}
+	}
+
+	if err := r.pg.InsertLLMRecordDelta(rec, to, reqSHA); err != nil {
+		if err2 := r.pg.InsertLLMRecord(rec); err2 != nil {
+			log.Printf("[llmrec] insert: %v (delta: %v)", err2, err)
+		}
+	}
 }
 
-type CallRecord struct {
-	SessionID   string
-	IntentID    *string
-	UpToSeq     int
-	ResponseSeq int
-	Model       string
-	ProfileID   *string
-	TokensIn    int
-	TokensOut   int
-	CacheRead   int
-	LatencyMS   int
-	Status      string
-	Error       *string
-}
-
-type SessionStats struct {
-	Turns             int
-	TotalTokens       int64
-	CompressedBytes   int64
-	EstimatedRawBytes int64
-	CompressionRatio  float64
-}
-
-// estimateTokens approximates token count as len/4 (rough BPE estimate).
-func estimateTokens(content []byte) int {
-	return len(content) / 4
+// serializeRequest builds a JSON representation of the completion request.
+func (r *Recorder) serializeRequest(req llm.CompletionRequest) string {
+	m := map[string]any{
+		"system":     req.System,
+		"messages":   req.Messages,
+		"max_tokens": req.MaxTokens,
+	}
+	// Record the thinking params actually sent on this call. type takes the effective
+	// value: the per-request override req.Thinking wins over the config-level
+	// thinkingType (matching norma buildBody's decision — e.g. compaction summaries
+	// force disabled); effort has no per-request override, so the config value is
+	// used directly. When both are empty, no thinking field is written.
+	effType := r.thinkingType
+	if req.Thinking != "" {
+		effType = req.Thinking
+	}
+	if effType != "" || r.reasoningEffort != "" {
+		m["thinking"] = map[string]string{"type": effType, "effort": r.reasoningEffort}
+	}
+	if len(req.Tools) > 0 {
+		// Store tool names only (full schemas are huge).
+		names := make([]string, len(req.Tools))
+		for i, t := range req.Tools {
+			names[i] = t.Name
+		}
+		m["tools"] = names
+		m["tools_count"] = len(req.Tools)
+	}
+	if req.Temperature != nil {
+		m["temperature"] = *req.Temperature
+	}
+	if len(req.Stop) > 0 {
+		m["stop"] = req.Stop
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
 }

@@ -1,4 +1,4 @@
-// Package authmatrix implements multi-identity auth vault and differential IDOR/BOLA detection.
+// Package authmatrix stores multi-identity credentials and diffs responses for IDOR/BOLA.
 package authmatrix
 
 import (
@@ -6,17 +6,16 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Identity labels
 const (
 	LabelUnauth = "unauth"
 	LabelUserA  = "user_a"
@@ -24,233 +23,210 @@ const (
 	LabelAdmin  = "admin"
 )
 
-// Vault manages per-engagement auth identities with encrypted credential storage.
+// Vault encrypts per-task identity credentials at rest.
 type Vault struct {
-	db        *pgxpool.Pool
-	encKey    []byte // 32-byte AES-256 key
+	db     *sql.DB
+	encKey []byte
 }
 
-func New(db *pgxpool.Pool, encKey []byte) (*Vault, error) {
+// New requires a 32-byte AES key.
+func New(db *sql.DB, encKey []byte) (*Vault, error) {
 	if len(encKey) != 32 {
 		return nil, fmt.Errorf("enc key must be 32 bytes, got %d", len(encKey))
 	}
 	return &Vault{db: db, encKey: encKey}, nil
 }
 
-// SetIdentity stores or updates credentials for a labeled identity.
-func (v *Vault) SetIdentity(ctx context.Context, engID, label, kind string, credentials map[string]any, expiresAt *time.Time) error {
-	credJSON, err := json.Marshal(credentials)
+// SetIdentity upserts encrypted credentials for a label on a task.
+func (v *Vault) SetIdentity(ctx context.Context, taskID, label, kind string, credentials map[string]any, expiresAt *time.Time) error {
+	raw, err := json.Marshal(credentials)
 	if err != nil {
 		return err
 	}
-	encrypted, err := v.encrypt(credJSON)
+	sealed, err := v.encrypt(raw)
 	if err != nil {
 		return err
 	}
-	_, err = v.db.Exec(ctx, `
-		INSERT INTO auth_identities (engagement_id, label, kind, credentials, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (engagement_id, label)
-		DO UPDATE SET kind = $3, credentials = $4, expires_at = $5, updated_at = now()`,
-		engID, label, kind, encrypted, expiresAt,
-	)
+	_, err = v.db.ExecContext(ctx, `
+INSERT INTO auth_identities (task_id, label, kind, credentials, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (task_id, label)
+DO UPDATE SET kind = EXCLUDED.kind, credentials = EXCLUDED.credentials,
+              expires_at = EXCLUDED.expires_at, updated_at = now()`,
+		taskID, label, kind, sealed, expiresAt)
 	return err
 }
 
-// GetCredentials retrieves and decrypts credentials for a labeled identity.
-func (v *Vault) GetCredentials(ctx context.Context, engID, label string) (map[string]any, error) {
-	var encrypted []byte
-	err := v.db.QueryRow(ctx,
-		`SELECT credentials FROM auth_identities WHERE engagement_id = $1 AND label = $2`,
-		engID, label,
-	).Scan(&encrypted)
-	if err != nil {
-		return nil, fmt.Errorf("get identity %s: %w", label, err)
-	}
-	decrypted, err := v.decrypt(encrypted)
+// GetCredentials decrypts credentials for a label.
+func (v *Vault) GetCredentials(ctx context.Context, taskID, label string) (map[string]any, error) {
+	var sealed []byte
+	err := v.db.QueryRowContext(ctx,
+		`SELECT credentials FROM auth_identities WHERE task_id = $1 AND label = $2`,
+		taskID, label).Scan(&sealed)
 	if err != nil {
 		return nil, err
 	}
-	var creds map[string]any
-	if err := json.Unmarshal(decrypted, &creds); err != nil {
+	plain, err := v.decrypt(sealed)
+	if err != nil {
 		return nil, err
 	}
-	return creds, nil
-}
-
-// IDORAnalyzer replays safe read endpoints across identities to detect access control issues.
-type IDORAnalyzer struct {
-	db    *pgxpool.Pool
-	vault *Vault
-}
-
-func NewIDORAnalyzer(db *pgxpool.Pool, vault *Vault) *IDORAnalyzer {
-	return &IDORAnalyzer{db: db, vault: vault}
-}
-
-// AnalyzeEndpoint replays a request across all identities and computes structural diffs.
-func (a *IDORAnalyzer) AnalyzeEndpoint(ctx context.Context, engID, requestID string) ([]*IDORCandidate, error) {
-	// Load the baseline request
-	var method, url string
-	err := a.db.QueryRow(ctx,
-		`SELECT method, url FROM traffic_requests WHERE id = $1`, requestID,
-	).Scan(&method, &url)
-	if err != nil {
-		return nil, fmt.Errorf("load baseline request: %w", err)
+	var out map[string]any
+	if err := json.Unmarshal(plain, &out); err != nil {
+		return nil, err
 	}
+	return out, nil
+}
 
-	// Only analyze GET/HEAD/OPTIONS (safe methods for replay)
-	if !isSafeMethod(method) {
-		return nil, nil
-	}
-
-	// Get all identities for this engagement
-	rows, err := a.db.Query(ctx,
-		`SELECT label, kind FROM auth_identities WHERE engagement_id = $1`, engID)
+// ListLabels returns identity labels configured for a task.
+func (v *Vault) ListLabels(ctx context.Context, taskID string) ([]map[string]any, error) {
+	rows, err := v.db.QueryContext(ctx, `
+SELECT label, kind, expires_at, updated_at FROM auth_identities WHERE task_id = $1 ORDER BY label`, taskID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	type identity struct{ label, kind string }
-	var identities []identity
+	var out []map[string]any
 	for rows.Next() {
-		var id identity
-		if err := rows.Scan(&id.label, &id.kind); err != nil {
+		var label, kind string
+		var exp sql.NullTime
+		var updated time.Time
+		if err := rows.Scan(&label, &kind, &exp, &updated); err != nil {
 			return nil, err
 		}
-		identities = append(identities, id)
-	}
-
-	if len(identities) < 2 {
-		return nil, nil // need at least 2 identities to diff
-	}
-
-	// Replay and collect responses
-	type response struct {
-		label string
-		body  string
-	}
-	var responses []response
-	for _, id := range identities {
-		creds, err := a.vault.GetCredentials(ctx, engID, id.label)
-		if err != nil {
-			slog.Warn("idor: get creds failed", "label", id.label, "err", err)
-			continue
+		item := map[string]any{"label": label, "kind": kind, "updated_at": updated.UTC().Format(time.RFC3339)}
+		if exp.Valid {
+			item["expires_at"] = exp.Time.UTC().Format(time.RFC3339)
 		}
-		body, err := replayRequest(ctx, method, url, id.kind, creds)
-		if err != nil {
-			slog.Warn("idor: replay failed", "label", id.label, "err", err)
-			continue
-		}
-		responses = append(responses, response{label: id.label, body: body})
+		out = append(out, item)
 	}
+	return out, rows.Err()
+}
 
-	// Compute structural diffs between identity pairs
-	var candidates []*IDORCandidate
-	for i := 0; i < len(responses)-1; i++ {
-		for j := i + 1; j < len(responses); j++ {
-			diff := structuralDiff(responses[i].body, responses[j].body)
-			if diff > 0.1 { // 10% structural difference threshold
-				candidate := &IDORCandidate{
-					EngagementID: engID,
-					RequestID:    requestID,
-					BaselineID:   responses[i].label,
-					ComparedID:   responses[j].label,
-					DiffScore:    diff,
-					DiffSummary:  fmt.Sprintf("%.0f%% structural difference between %s and %s responses", diff*100, responses[i].label, responses[j].label),
-				}
-				candidates = append(candidates, candidate)
+// Candidate is a differential access finding across identities.
+type Candidate struct {
+	URL           string `json:"url"`
+	Method        string `json:"method"`
+	BaselineLabel string `json:"baseline_label"`
+	OtherLabel    string `json:"other_label"`
+	StatusBase    int    `json:"status_base"`
+	StatusOther   int    `json:"status_other"`
+	BodyDiffHint  string `json:"body_diff_hint"`
+	Severity      string `json:"severity"`
+}
 
-				// Persist candidate
-				_, _ = a.db.Exec(ctx, `
-					INSERT INTO idor_candidates
-						(engagement_id, request_id, baseline_id, compared_id, diff_score, diff_summary)
-					VALUES ($1,$2,$3,$4,$5,$6)`,
-					engID, requestID, responses[i].label, responses[j].label,
-					candidate.DiffScore, candidate.DiffSummary)
+// Analyzer replays a URL across identities with their Authorization/Cookie headers.
+type Analyzer struct {
+	vault  *Vault
+	client *http.Client
+}
+
+func NewAnalyzer(v *Vault, proxyURL string) *Analyzer {
+	tr := &http.Transport{DisableKeepAlives: true}
+	if proxyURL != "" {
+		if pu, err := url.Parse(proxyURL); err == nil && pu.Host != "" {
+			tr.Proxy = http.ProxyURL(pu)
+		}
+	}
+	return &Analyzer{vault: v, client: &http.Client{Timeout: 15 * time.Second, Transport: tr}}
+}
+
+// DiffGET fetches the same path with each identity and reports status/body-shape deltas.
+func (a *Analyzer) DiffGET(ctx context.Context, taskID, rawURL string, labels []string) ([]Candidate, error) {
+	if len(labels) == 0 {
+		labels = []string{LabelUnauth, LabelUserA, LabelUserB, LabelAdmin}
+	}
+	type sample struct {
+		label  string
+		status int
+		body   string
+		err    string
+	}
+	samples := make([]sample, 0, len(labels))
+	for _, label := range labels {
+		st, body, err := a.fetch(ctx, taskID, label, rawURL)
+		s := sample{label: label, status: st, body: body}
+		if err != nil {
+			s.err = err.Error()
+		}
+		samples = append(samples, s)
+	}
+	var out []Candidate
+	for i := 0; i < len(samples); i++ {
+		for j := i + 1; j < len(samples); j++ {
+			a, b := samples[i], samples[j]
+			if a.err != "" || b.err != "" {
+				continue
+			}
+			if a.status == b.status && shape(a.body) == shape(b.body) {
+				continue
+			}
+			sev := "medium"
+			if (a.status == 200 && b.status == 403) || (a.status == 403 && b.status == 200) ||
+				(a.status == 200 && b.status == 401) || (a.status == 401 && b.status == 200) {
+				sev = "high"
+			}
+			out = append(out, Candidate{
+				URL:           rawURL,
+				Method:        http.MethodGet,
+				BaselineLabel: a.label,
+				OtherLabel:    b.label,
+				StatusBase:    a.status,
+				StatusOther:   b.status,
+				BodyDiffHint:  fmt.Sprintf("%s≠%s", shape(a.body), shape(b.body)),
+				Severity:      sev,
+			})
+		}
+	}
+	return out, nil
+}
+
+func (a *Analyzer) fetch(ctx context.Context, taskID, label, rawURL string) (int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	if label != LabelUnauth {
+		creds, err := a.vault.GetCredentials(ctx, taskID, label)
+		if err != nil && err != sql.ErrNoRows {
+			return 0, "", err
+		}
+		if err == nil {
+			if c, ok := creds["cookie"].(string); ok && c != "" {
+				req.Header.Set("Cookie", c)
+			}
+			if t, ok := creds["authorization"].(string); ok && t != "" {
+				req.Header.Set("Authorization", t)
+			}
+			if t, ok := creds["bearer"].(string); ok && t != "" {
+				req.Header.Set("Authorization", "Bearer "+t)
 			}
 		}
 	}
-	return candidates, nil
-}
-
-type IDORCandidate struct {
-	EngagementID string
-	RequestID    string
-	BaselineID   string
-	ComparedID   string
-	DiffScore    float64
-	DiffSummary  string
-	FindingID    *string
-}
-
-// replayRequest sends a request with the given identity's credentials.
-func replayRequest(ctx context.Context, method, url, credKind string, creds map[string]any) (string, error) {
-	// In production: use uTLS client routed through the MITM proxy
-	// Here: placeholder returning empty string (real impl in HTTP transport layer)
-	_ = ctx
-	_ = method
-	_ = url
-	_ = credKind
-	_ = creds
-	return "", nil
-}
-
-// structuralDiff computes a rough normalized edit distance between two JSON response bodies.
-func structuralDiff(a, b string) float64 {
-	if a == b {
-		return 0
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return 0, "", err
 	}
-	if len(a) == 0 || len(b) == 0 {
-		return 1.0
-	}
-	// Rough key-count diff as a proxy for structural difference
-	aKeys := countJSONKeys(a)
-	bKeys := countJSONKeys(b)
-	if aKeys == 0 && bKeys == 0 {
-		return levenshteinRatio(a, b)
-	}
-	diff := float64(abs(aKeys-bKeys)) / float64(max(aKeys, bKeys))
-	return diff
+	defer resp.Body.Close()
+	buf := make([]byte, 4096)
+	n, _ := io.ReadFull(resp.Body, buf)
+	return resp.StatusCode, string(buf[:n]), nil
 }
 
-func countJSONKeys(s string) int {
-	return strings.Count(s, `":"`) + strings.Count(s, `": "`)
-}
-
-func levenshteinRatio(a, b string) float64 {
-	maxLen := len(a)
-	if len(b) > maxLen {
-		maxLen = len(b)
+func shape(body string) string {
+	b := strings.TrimSpace(body)
+	if b == "" {
+		return "empty"
 	}
-	if maxLen == 0 {
-		return 0
+	if strings.HasPrefix(b, "{") {
+		return fmt.Sprintf("json:%d", len(b))
 	}
-	// Simplified: use length difference as proxy
-	return float64(abs(len(a)-len(b))) / float64(maxLen)
-}
-
-func isSafeMethod(method string) bool {
-	return method == "GET" || method == "HEAD" || method == "OPTIONS"
-}
-
-func abs(n int) int {
-	if n < 0 {
-		return -n
+	if strings.HasPrefix(b, "<") {
+		return fmt.Sprintf("html:%d", len(b))
 	}
-	return n
+	return fmt.Sprintf("text:%d", len(b))
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-// encrypt encrypts data using AES-256-GCM.
-func (v *Vault) encrypt(plaintext []byte) ([]byte, error) {
+func (v *Vault) encrypt(plain []byte) ([]byte, error) {
 	block, err := aes.NewCipher(v.encKey)
 	if err != nil {
 		return nil, err
@@ -263,11 +239,10 @@ func (v *Vault) encrypt(plaintext []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nonce, nonce, plain, nil), nil
 }
 
-// decrypt decrypts AES-256-GCM ciphertext.
-func (v *Vault) decrypt(ciphertext []byte) ([]byte, error) {
+func (v *Vault) decrypt(sealed []byte) ([]byte, error) {
 	block, err := aes.NewCipher(v.encKey)
 	if err != nil {
 		return nil, err
@@ -276,10 +251,9 @@ func (v *Vault) decrypt(ciphertext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
+	if len(sealed) < gcm.NonceSize() {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
-	nonce, ct := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	nonce, ct := sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():]
 	return gcm.Open(nil, nonce, ct, nil)
 }

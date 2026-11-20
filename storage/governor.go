@@ -2,14 +2,14 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 )
 
 const (
@@ -19,190 +19,211 @@ const (
 	LLMRawDebugTTLHours   = 24
 )
 
-// Governor enforces disk quotas, runs TTL cleanup, and coordinates Parquet cold tiering.
+// Governor enforces disk quotas and TTL cleanup against an ARTEX data directory
+// and PostgreSQL. It does not delete finding-linked evidence.
 type Governor struct {
-	db         *pgxpool.Pool
-	scratchDir string
-	maxDiskGB  int64
-	scratchMB  int64
-	river      *river.Client[pgxpool.Tx]
+	db        *sql.DB
+	dataDir   string
+	maxDiskGB int64
+	scratchMB int64
 }
 
-func NewGovernor(db *pgxpool.Pool, scratchDir string) *Governor {
+func NewGovernor(db *sql.DB, dataDir string) *Governor {
 	maxGB := int64(DefaultMaxDiskGB)
-	if v := os.Getenv("ARKEX_MAX_DISK_GB"); v != "" {
-		fmt.Sscanf(v, "%d", &maxGB)
+	if v := strings.TrimSpace(os.Getenv("ARKEX_MAX_DISK_GB")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			maxGB = n
+		}
 	}
-	return &Governor{
-		db:         db,
-		scratchDir: scratchDir,
-		maxDiskGB:  maxGB,
-		scratchMB:  DefaultScratchQuotaMB,
+	scratch := int64(DefaultScratchQuotaMB)
+	if v := strings.TrimSpace(os.Getenv("ARKEX_SCRATCH_QUOTA_MB")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			scratch = n
+		}
 	}
+	return &Governor{db: db, dataDir: dataDir, maxDiskGB: maxGB, scratchMB: scratch}
 }
 
-// GovArgs is the River job args for the periodic Governor run.
-type GovArgs struct{}
+// ScratchQuotaBytes is the per-intent scratch cap.
+func (g *Governor) ScratchQuotaBytes() int64 { return g.scratchMB << 20 }
 
-func (GovArgs) Kind() string { return "storage_governor" }
-
-// Run executes all governor checks. Called by River periodically.
-func (g *Governor) Run(ctx context.Context, job *river.Job[GovArgs]) error {
+// RunOnce executes one governor pass.
+func (g *Governor) RunOnce(ctx context.Context) error {
 	start := time.Now()
-	var errs []error
-
-	if err := g.purgeLLMRawDebug(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("llm raw debug: %w", err))
+	var first error
+	capture := func(err error) {
+		if err != nil && first == nil {
+			first = err
+		}
 	}
-	if err := g.dropStaleFTSIndex(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("fts index: %w", err))
-	}
-	if err := g.cleanScratch(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("scratch: %w", err))
-	}
-	if err := g.recordMetrics(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("metrics: %w", err))
-	}
-	if err := g.enforceGlobalCap(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("global cap: %w", err))
-	}
-
-	slog.Info("storage governor run", "elapsed", time.Since(start), "errors", len(errs))
-	if len(errs) > 0 {
-		return errs[0]
-	}
-	return nil
+	capture(g.purgeLLMRawDebug(ctx))
+	capture(g.cleanClosedTaskScratch(ctx))
+	capture(g.recordMetrics(ctx))
+	slog.Info("storage governor run", "elapsed", time.Since(start), "err", first)
+	return first
 }
 
-// purgeLLMRawDebug drops rows older than 24h from llm_raw_debug.
+// StartPeriodic runs RunOnce on interval until ctx is done.
+func (g *Governor) StartPeriodic(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		_ = g.RunOnce(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				_ = g.RunOnce(ctx)
+			}
+		}
+	}()
+}
+
 func (g *Governor) purgeLLMRawDebug(ctx context.Context) error {
-	tag, err := g.db.Exec(ctx,
-		`DELETE FROM llm_raw_debug WHERE created_at < now() - interval '24 hours'`)
+	if g.db == nil {
+		return nil
+	}
+	res, err := g.db.ExecContext(ctx,
+		`DELETE FROM llm_raw_debug WHERE created_at < now() - make_interval(hours => $1)`, LLMRawDebugTTLHours)
 	if err != nil {
+		// Table may not exist yet on pre-migration DBs during tests.
+		if strings.Contains(err.Error(), "llm_raw_debug") {
+			return nil
+		}
 		return err
 	}
-	slog.Debug("purged llm_raw_debug", "rows", tag.RowsAffected())
+	n, _ := res.RowsAffected()
+	slog.Debug("purged llm_raw_debug", "rows", n)
 	return nil
 }
 
-// dropStaleFTSIndex removes traffic_fts rows for tasks closed >7 days ago.
-func (g *Governor) dropStaleFTSIndex(ctx context.Context) error {
-	tag, err := g.db.Exec(ctx, `
-		DELETE FROM traffic_fts tf
-		USING traffic_requests tr, traffic_sessions ts, engagements e
-		WHERE tf.request_id = tr.id
-		  AND tr.session_id = ts.id
-		  AND ts.engagement_id = e.id
-		  AND e.status IN ('done','cancelled')
-		  AND e.finished_at < now() - interval '7 days'`)
-	if err != nil {
-		return err
+// cleanClosedTaskScratch removes orphan cmd-output under closed tasks older than 1h,
+// keeping anything whose name suggests finding/evidence linkage.
+func (g *Governor) cleanClosedTaskScratch(ctx context.Context) error {
+	if g.db == nil || g.dataDir == "" {
+		return nil
 	}
-	slog.Debug("dropped stale FTS rows", "rows", tag.RowsAffected())
-	return nil
-}
-
-// cleanScratch removes task scratch dirs whose intents finished and have no linked evidence.
-func (g *Governor) cleanScratch(ctx context.Context) error {
-	rows, err := g.db.Query(ctx, `
-		SELECT i.id, i.scratch_bytes
-		FROM intents i
-		WHERE i.status IN ('done','failed','killed')
-		  AND i.finished_at < now() - interval '1 hour'
-		  AND i.scratch_bytes > 0`)
+	rows, err := g.db.QueryContext(ctx, `
+		SELECT id::text FROM tasks
+		WHERE status IN ('done','failed','timeout')
+		  AND deleted_at IS NULL
+		  AND COALESCE(completed_at, updated_at, created_at) < now() - interval '1 hour'
+		LIMIT 200`)
 	if err != nil {
-		return err
+		// tasks schema variants — best-effort
+		return nil
 	}
 	defer rows.Close()
-
 	for rows.Next() {
 		var id string
-		var scratched int64
-		if err := rows.Scan(&id, &scratched); err != nil {
+		if err := rows.Scan(&id); err != nil {
 			continue
 		}
-		dir := filepath.Join(g.scratchDir, id)
-		if err := os.RemoveAll(dir); err == nil {
-			_, _ = g.db.Exec(ctx, `UPDATE intents SET scratch_bytes = 0 WHERE id = $1`, id)
-		}
+		dir := filepath.Join(g.dataDir, "tasks", id)
+		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info == nil || info.IsDir() {
+				return nil
+			}
+			base := strings.ToLower(info.Name())
+			if strings.Contains(base, "finding") || strings.Contains(base, "evidence") || strings.Contains(base, "loot") {
+				return nil
+			}
+			if strings.Contains(path, "cmd-output") || strings.HasSuffix(base, ".tmp") || strings.HasSuffix(base, ".log") {
+				_ = os.Remove(path)
+			}
+			return nil
+		})
 	}
-	return rows.Err()
+	return nil
 }
 
-// recordMetrics snapshots current disk usage into storage_metrics.
-func (g *Governor) recordMetrics(ctx context.Context) error {
-	var pgBytes, blobOrig, blobComp int64
-	_ = g.db.QueryRow(ctx,
-		`SELECT pg_database_size(current_database())`).Scan(&pgBytes)
-	_ = g.db.QueryRow(ctx,
-		`SELECT COALESCE(SUM(size_original),0), COALESCE(SUM(size_compressed),0) FROM blobs`,
-	).Scan(&blobOrig, &blobComp)
+// Breakdown is the GET /api/system/storage payload.
+type Breakdown struct {
+	PGBytes          int64   `json:"pg_bytes"`
+	TrafficBytes     int64   `json:"traffic_bytes"`
+	ScratchBytes     int64   `json:"scratch_bytes"`
+	BlobBytes        int64   `json:"blob_bytes"`
+	TotalGB          float64 `json:"total_gb"`
+	MaxDiskGB        int64   `json:"max_disk_gb"`
+	ScratchQuotaMB   int64   `json:"scratch_quota_mb"`
+	CompressionRatio float64 `json:"compression_ratio"`
+	SavedBytes       int64   `json:"saved_bytes"`
+}
 
-	ratio := float64(1)
-	if blobComp > 0 {
-		ratio = float64(blobOrig) / float64(blobComp)
+func (g *Governor) Breakdown(ctx context.Context) (Breakdown, error) {
+	var b Breakdown
+	b.MaxDiskGB = g.maxDiskGB
+	b.ScratchQuotaMB = g.scratchMB
+	if g.dataDir != "" {
+		b.TrafficBytes = dirSize(filepath.Join(g.dataDir, "traffic"))
+		b.ScratchBytes = dirSize(filepath.Join(g.dataDir, "tasks"))
+		b.BlobBytes = dirSize(filepath.Join(g.dataDir, "traffic", "_blobs"))
 	}
+	if g.db != nil {
+		_ = g.db.QueryRowContext(ctx, `
+			SELECT COALESCE(pg_database_size(current_database()), 0)`).Scan(&b.PGBytes)
+		var orig, comp sql.NullInt64
+		_ = g.db.QueryRowContext(ctx, `
+			SELECT COALESCE(SUM(size_original),0), COALESCE(SUM(size_compressed),0)
+			FROM storage_metrics WHERE kind = 'blob'`).Scan(&orig, &comp)
+		if orig.Valid && orig.Int64 > 0 && comp.Valid {
+			b.CompressionRatio = float64(comp.Int64) / float64(orig.Int64)
+			b.SavedBytes = orig.Int64 - comp.Int64
+		}
+	}
+	total := b.PGBytes + b.TrafficBytes + b.ScratchBytes
+	b.TotalGB = float64(total) / (1 << 30)
+	return b, nil
+}
 
-	_, err := g.db.Exec(ctx, `
-		INSERT INTO storage_metrics (pg_bytes, blob_bytes, compression_ratio)
-		VALUES ($1, $2, $3)`,
-		pgBytes, blobComp, ratio)
+func (g *Governor) recordMetrics(ctx context.Context) error {
+	if g.db == nil {
+		return nil
+	}
+	b, err := g.Breakdown(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = g.db.ExecContext(ctx, `
+		INSERT INTO storage_metrics(kind, size_original, size_compressed, meta)
+		VALUES ('snapshot', $1, $2, jsonb_build_object(
+			'traffic_bytes', $3::bigint,
+			'scratch_bytes', $4::bigint,
+			'blob_bytes', $5::bigint,
+			'total_gb', $6::float8
+		))`,
+		b.PGBytes+b.TrafficBytes+b.ScratchBytes,
+		b.PGBytes+b.BlobBytes+b.ScratchBytes,
+		b.TrafficBytes, b.ScratchBytes, b.BlobBytes, b.TotalGB,
+	)
+	if err != nil && strings.Contains(err.Error(), "storage_metrics") {
+		return nil
+	}
 	return err
 }
 
-// enforceGlobalCap evicts old blobs if total exceeds ARKEX_MAX_DISK_GB.
-func (g *Governor) enforceGlobalCap(ctx context.Context) error {
-	var totalGB float64
-	_ = g.db.QueryRow(ctx, `
-		SELECT (pg_database_size(current_database()) + COALESCE(SUM(size_compressed),0))::float / 1e9
-		FROM blobs`).Scan(&totalGB)
-
-	if totalGB < float64(g.maxDiskGB)*0.9 {
+func dirSize(root string) int64 {
+	var total int64
+	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		total += info.Size()
 		return nil
-	}
-	slog.Warn("storage cap approaching, evicting oldest unreferenced blobs",
-		"total_gb", totalGB, "max_gb", g.maxDiskGB)
+	})
+	return total
+}
 
-	// Evict blobs not referenced by any finding evidence (safe to drop)
-	tag, err := g.db.Exec(ctx, `
-		DELETE FROM blobs b
-		WHERE b.created_at < now() - interval '30 days'
-		  AND NOT EXISTS (
-			SELECT 1 FROM findings f WHERE f.evidence::text LIKE '%' || b.sha256 || '%'
-		  )
-		LIMIT 1000`)
-	if err != nil {
-		return err
+// EnforceScratchQuota returns an error when dir already exceeds the per-intent cap.
+func (g *Governor) EnforceScratchQuota(intentDir string) error {
+	n := dirSize(intentDir)
+	cap := g.ScratchQuotaBytes()
+	if n > cap {
+		return fmt.Errorf("scratch quota exceeded: %d bytes > %d bytes cap", n, cap)
 	}
-	slog.Info("evicted unreferenced blobs", "rows", tag.RowsAffected())
 	return nil
-}
-
-// StorageBreakdown is returned by GET /api/system/storage.
-type StorageBreakdown struct {
-	PGBytes          int64   `json:"pg_bytes"`
-	BlobBytes        int64   `json:"blob_bytes"`
-	TrafficFTSBytes  int64   `json:"traffic_fts_bytes"`
-	ScratchBytes     int64   `json:"scratch_bytes"`
-	ColdBytes        int64   `json:"cold_bytes"`
-	CompressionRatio float64 `json:"compression_ratio"`
-	TotalGB          float64 `json:"total_gb"`
-}
-
-func (g *Governor) GetBreakdown(ctx context.Context) (*StorageBreakdown, error) {
-	var b StorageBreakdown
-	err := g.db.QueryRow(ctx, `
-		SELECT
-			pg_database_size(current_database()),
-			COALESCE((SELECT SUM(size_compressed) FROM blobs),0),
-			COALESCE((SELECT pg_relation_size('traffic_fts')),0),
-			COALESCE((SELECT SUM(scratch_bytes) FROM intents WHERE status = 'running'),0),
-			0,
-			COALESCE((SELECT compression_ratio FROM storage_metrics ORDER BY recorded_at DESC LIMIT 1),1.0)
-		`).Scan(&b.PGBytes, &b.BlobBytes, &b.TrafficFTSBytes, &b.ScratchBytes, &b.ColdBytes, &b.CompressionRatio)
-	if err != nil {
-		return nil, fmt.Errorf("storage breakdown: %w", err)
-	}
-	b.TotalGB = float64(b.PGBytes+b.BlobBytes+b.ScratchBytes+b.ColdBytes) / 1e9
-	return &b, nil
 }

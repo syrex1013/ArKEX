@@ -1,64 +1,76 @@
-// Package oast embeds an interactsh OAST server for cryptographically correlated callbacks.
-// S3 receipt: DNS/HTTP/SMTP/LDAP callback persisted and used to wake the planner.
+// Package oast provides cryptographically tagged OOB callback correlation (S3 receipts).
 package oast
 
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Server embeds interactsh and correlates callbacks to intents.
-type Server struct {
-	db          *pgxpool.Pool
-	domain      string
-	callbacks   chan *Callback
-	mu          sync.RWMutex
-	waiters     map[string]chan *Callback // payloadTag -> waiter
-}
-
-// Callback represents an incoming OAST interaction.
+// Callback is one inbound OAST interaction.
 type Callback struct {
-	PayloadTag  string
-	Protocol    string // dns, http, smtp, ldap
-	RemoteAddr  string
-	Data        map[string]any
-	ReceivedAt  time.Time
+	PayloadTag string
+	Protocol   string
+	RemoteAddr string
+	Data       map[string]any
+	ReceivedAt time.Time
 }
 
-func New(db *pgxpool.Pool, domain string) *Server {
+// Server correlates payload tags to callbacks and wakes waiters.
+type Server struct {
+	db      *sql.DB
+	domain  string
+	mu      sync.RWMutex
+	waiters map[string]chan *Callback
+	onHit   func(cb *Callback) // optional planner wakeup hook
+}
+
+// New builds an OAST correlator. Domain defaults to ARKEX_OAST_DOMAIN or oast.local.
+func New(db *sql.DB, domain string) *Server {
+	if domain == "" {
+		domain = strings.TrimSpace(os.Getenv("ARKEX_OAST_DOMAIN"))
+	}
+	if domain == "" {
+		domain = "oast.local"
+	}
 	return &Server{
-		db:        db,
-		domain:    domain,
-		callbacks: make(chan *Callback, 256),
-		waiters:   make(map[string]chan *Callback),
+		db:      db,
+		domain:  domain,
+		waiters: map[string]chan *Callback{},
 	}
 }
 
-// GeneratePayload creates a unique OAST payload tag for an intent.
-// Format: <random16hex>.<domain>
-func (s *Server) GeneratePayload(ctx context.Context, tag, intentID, engID string) (string, error) {
+// SetHitHook registers a callback invoked on every correlated hit (planner wake).
+func (s *Server) SetHitHook(fn func(*Callback)) { s.onHit = fn }
+
+// Domain returns the configured callback domain.
+func (s *Server) Domain() string { return s.domain }
+
+// GeneratePayload registers a unique tag for task/intent and returns host payload.
+func (s *Server) GeneratePayload(ctx context.Context, tag, taskID, intentID string) (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	unique := hex.EncodeToString(b)
+	if tag == "" {
+		tag = "arkex"
+	}
 	payload := fmt.Sprintf("%s-%s.%s", tag, unique, s.domain)
-
 	if s.db != nil {
-		_, err := s.db.Exec(ctx, `
-			INSERT INTO oast_callbacks (engagement_id, intent_id, payload_tag, protocol, data)
-			VALUES ($1, $2, $3, 'pending', '{}')
-			ON CONFLICT DO NOTHING`,
-			engID, intentID, payload)
+		_, err := s.db.ExecContext(ctx, `
+INSERT INTO oast_callbacks (task_id, intent_id, payload_tag, protocol, data)
+VALUES ($1, $2, $3, 'pending', '{}')
+ON CONFLICT (payload_tag) DO NOTHING`, taskID, intentID, payload)
 		if err != nil {
 			return "", fmt.Errorf("register oast payload: %w", err)
 		}
@@ -66,7 +78,7 @@ func (s *Server) GeneratePayload(ctx context.Context, tag, intentID, engID strin
 	return payload, nil
 }
 
-// WaitForCallback blocks until a callback arrives for the given payload tag or ctx expires.
+// WaitForCallback blocks until a hit arrives or timeout/ctx ends.
 func (s *Server) WaitForCallback(ctx context.Context, payloadTag string, timeout time.Duration) (*Callback, error) {
 	ch := make(chan *Callback, 1)
 	s.mu.Lock()
@@ -77,76 +89,55 @@ func (s *Server) WaitForCallback(ctx context.Context, payloadTag string, timeout
 		delete(s.waiters, payloadTag)
 		s.mu.Unlock()
 	}()
-
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case cb := <-ch:
 		return cb, nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		return nil, fmt.Errorf("oast timeout after %s for %s", timeout, payloadTag)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-// HandleHTTPCallback processes an incoming HTTP interaction (registered as webhook).
+// HandleHTTPCallback records an HTTP interaction from Host header.
 func (s *Server) HandleHTTPCallback(w http.ResponseWriter, r *http.Request) {
-	// Extract the payload tag from the Host header
-	host := r.Host
-	payloadTag := host
-
 	cb := &Callback{
-		PayloadTag: payloadTag,
+		PayloadTag: r.Host,
 		Protocol:   "http",
 		RemoteAddr: r.RemoteAddr,
 		Data: map[string]any{
 			"method": r.Method,
 			"path":   r.URL.Path,
-			"headers": r.Header,
 		},
-		ReceivedAt: time.Now(),
+		ReceivedAt: time.Now().UTC(),
 	}
 	s.dispatch(r.Context(), cb)
 	w.WriteHeader(http.StatusOK)
 }
 
-// HandleDNSCallback processes an incoming DNS interaction.
-func (s *Server) HandleDNSCallback(ctx context.Context, qname, qtype, remoteAddr string) {
-	// Extract payload tag from subdomain prefix
-	parts := strings.SplitN(qname, ".", 2)
-	tag := qname
-	if len(parts) > 0 {
-		tag = parts[0]
-	}
-	cb := &Callback{
-		PayloadTag: tag,
-		Protocol:   "dns",
-		RemoteAddr: remoteAddr,
-		Data:       map[string]any{"qname": qname, "qtype": qtype},
-		ReceivedAt: time.Now(),
+// Ingest records a callback from an external interactsh poller or DNS hook.
+func (s *Server) Ingest(ctx context.Context, cb *Callback) {
+	if cb.ReceivedAt.IsZero() {
+		cb.ReceivedAt = time.Now().UTC()
 	}
 	s.dispatch(ctx, cb)
 }
 
-// dispatch persists the callback and wakes any registered waiters.
 func (s *Server) dispatch(ctx context.Context, cb *Callback) {
 	if s.db != nil {
-		_, err := s.db.Exec(ctx, `
-			UPDATE oast_callbacks
-			SET protocol = $2, remote_addr = $3::inet, data = $4, received_at = $5
-			WHERE payload_tag = $1`,
-			cb.PayloadTag, cb.Protocol, cb.RemoteAddr, cb.Data, cb.ReceivedAt)
+		raw, _ := json.Marshal(cb.Data)
+		_, err := s.db.ExecContext(ctx, `
+UPDATE oast_callbacks
+SET protocol = $2, remote_addr = $3, data = $4::jsonb, received_at = $5
+WHERE payload_tag = $1 OR payload_tag = split_part($1, ':', 1)`,
+			cb.PayloadTag, cb.Protocol, cb.RemoteAddr, string(raw), cb.ReceivedAt)
 		if err != nil {
-			slog.Warn("oast dispatch persist", "err", err)
+			slog.Warn("oast persist", "err", err)
 		}
 	}
-
-	slog.Info("oast callback received",
-		"tag", cb.PayloadTag,
-		"protocol", cb.Protocol,
-		"remote", cb.RemoteAddr,
-	)
-
-	// Wake waiting intent
+	slog.Info("oast callback", "tag", cb.PayloadTag, "protocol", cb.Protocol, "remote", cb.RemoteAddr)
 	s.mu.RLock()
 	waiter, ok := s.waiters[cb.PayloadTag]
 	s.mu.RUnlock()
@@ -156,12 +147,56 @@ func (s *Server) dispatch(ctx context.Context, cb *Callback) {
 		default:
 		}
 	}
+	if s.onHit != nil {
+		s.onHit(cb)
+	}
 }
 
-// PendingCount returns how many payload tags are awaiting callbacks.
+// ListRecent returns recent callbacks for a task (empty task = all).
+func (s *Server) ListRecent(ctx context.Context, taskID string, limit int) ([]map[string]any, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var rows *sql.Rows
+	var err error
+	if taskID == "" {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT payload_tag, protocol, remote_addr, COALESCE(data::text,'{}'),
+       COALESCE(received_at, created_at), task_id, intent_id
+FROM oast_callbacks ORDER BY id DESC LIMIT $1`, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT payload_tag, protocol, remote_addr, COALESCE(data::text,'{}'),
+       COALESCE(received_at, created_at), task_id, intent_id
+FROM oast_callbacks WHERE task_id = $1 ORDER BY id DESC LIMIT $2`, taskID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []map[string]any
+	for rows.Next() {
+		var tag, proto, remote, data, task, intent string
+		var at time.Time
+		if err := rows.Scan(&tag, &proto, &remote, &data, &at, &task, &intent); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"payload_tag": tag,
+			"protocol":    proto,
+			"remote_addr": remote,
+			"data":        json.RawMessage(data),
+			"received_at": at.UTC().Format(time.RFC3339),
+			"task_id":     task,
+			"intent_id":   intent,
+		})
+	}
+	return out, rows.Err()
+}
+
+// PendingCount counts payloads still awaiting a hit.
 func (s *Server) PendingCount(ctx context.Context) (int64, error) {
 	var n int64
-	err := s.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM oast_callbacks WHERE protocol = 'pending'`).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM oast_callbacks WHERE protocol = 'pending'`).Scan(&n)
 	return n, err
 }

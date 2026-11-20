@@ -1,0 +1,80 @@
+/*
+label: ThreatVector
+value: threatvector
+*/
+
+/* ARKEX_V2_CODING_PROMPT.md §4 — stark red & white command center. */
+
+:root[data-theme-preset="threatvector"] {
+  --radius: 0.25rem;
+  --background: #ffffff;
+  --foreground: #212529;
+  --card: #ffffff;
+  --card-foreground: #212529;
+  --popover: #ffffff;
+  --popover-foreground: #212529;
+  --primary: #ff0000;
+  --primary-foreground: #ffffff;
+  --secondary: #f8f9fa;
+  --secondary-foreground: #212529;
+  --muted: #f8f9fa;
+  --muted-foreground: #6c757d;
+  --accent: #f8f9fa;
+  --accent-foreground: #212529;
+  --destructive: #dc3545;
+  --border: #e5e7eb;
+  --input: #e5e7eb;
+  --ring: #ff0000;
+  --chart-1: #ff0000;
+  --chart-2: #212529;
+  --chart-3: #dc3545;
+  --chart-4: #198754;
+  --chart-5: #0d6efd;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #212529;
+  --sidebar-primary: #ff0000;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f8f9fa;
+  --sidebar-accent-foreground: #212529;
+  --sidebar-border: #e5e7eb;
+  --sidebar-ring: #ff0000;
+  --shadow: none;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-xl: none;
+}
+
+.dark:root[data-theme-preset="threatvector"] {
+  --background: #0a0a0a;
+  --foreground: #e5e2e1;
+  --card: #141414;
+  --card-foreground: #e5e2e1;
+  --popover: #141414;
+  --popover-foreground: #e5e2e1;
+  --primary: #ff0000;
+  --primary-foreground: #ffffff;
+  --secondary: #1c1b1b;
+  --secondary-foreground: #e5e2e1;
+  --muted: #1c1b1b;
+  --muted-foreground: #9aa0a6;
+  --accent: #1c1b1b;
+  --accent-foreground: #e5e2e1;
+  --destructive: #ffb4ab;
+  --border: #2a2a2a;
+  --input: #2a2a2a;
+  --ring: #ff0000;
+  --chart-1: #ff0000;
+  --chart-2: #e5e2e1;
+  --chart-3: #dc3545;
+  --chart-4: #198754;
+  --chart-5: #0d6efd;
+  --sidebar: #141414;
+  --sidebar-foreground: #e5e2e1;
+  --sidebar-primary: #ff0000;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1c1b1b;
+  --sidebar-accent-foreground: #e5e2e1;
+  --sidebar-border: #2a2a2a;
+  --sidebar-ring: #ff0000;
+}
