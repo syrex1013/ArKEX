@@ -7,6 +7,7 @@ package wgkernel
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -325,7 +326,10 @@ func defaultRoute(ctx context.Context) (gateway, dev string, err error) {
 }
 
 // pinHosts resolves names now (before the resolver switch) and returns the
-// /etc/hosts lines that keep them reachable inside the tunnel.
+// /etc/hosts lines that keep them reachable inside the tunnel. A rebuild may
+// run while resolv.conf still points at the tunnel's resolver (a previous Down
+// raced a failed Up and lost the original), where Docker's embedded DNS is
+// unreachable — so every name gets a second try through Docker's own resolver.
 func pinHosts(names []string) string {
 	var b strings.Builder
 	for _, n := range names {
@@ -334,14 +338,56 @@ func pinHosts(names []string) string {
 		}
 		ips, err := net.LookupHost(n)
 		if err != nil || len(ips) == 0 {
-			continue
+			ips, err = dockerLookupHost(n)
+			if err != nil || len(ips) == 0 {
+				log.Printf("[wgkernel] failed to pin host %q for the tunnel: default resolver and Docker DNS (127.0.0.11) both failed: %v", n, err)
+				continue
+			}
 		}
 		b.WriteString(ips[0] + " " + n + "\n")
 	}
-	return b.String()
+	out := b.String()
+	if len(names) > 0 {
+		log.Printf("[wgkernel] pinned hosts: %q", strings.TrimSpace(out))
+	}
+	return out
+}
+
+// dockerLookupHost resolves one name against Docker's embedded DNS (127.0.0.11)
+// directly, bypassing whatever resolv.conf currently says.
+func dockerLookupHost(name string) ([]string, error) {
+	r := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "udp", "127.0.0.11:53")
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return r.LookupHost(ctx, name)
 }
 
 func appendHosts(add string) error {
+	// Repeated bring-ups (watchdog rebuilds) must not grow the file without
+	// bound: skip names already pinned by an earlier Up.
+	if existing, err := os.ReadFile("/etc/hosts"); err == nil {
+		var kept []string
+		for _, line := range strings.Split(add, "\n") {
+			f := strings.Fields(line)
+			if len(f) != 2 {
+				continue
+			}
+			if strings.Contains(string(existing), " "+f[1]+"\n") {
+				continue
+			}
+			kept = append(kept, line)
+		}
+		add = strings.Join(kept, "\n")
+		if add == "" {
+			return nil
+		}
+	}
 	f, err := os.OpenFile("/etc/hosts", os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err

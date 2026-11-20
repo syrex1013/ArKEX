@@ -309,6 +309,10 @@ type Manager struct {
 	wgSession *wgproxy.Session
 	// mullvad is the lazily built relay client used by the session watchdog.
 	mullvad *mullvad.Client
+	// pgServiceHost is the non-IP host from the resolved Postgres DSN ("postgres"
+	// under Docker), pinned to /etc/hosts for the tunnel's resolver. Empty when
+	// the DSN names a bare IP or no DSN resolved.
+	pgServiceHost string
 	// wgEgressChange is invoked after the wg session changes state, so callers
 	// (the Server) can rebuild agents whose transports captured the old proxy.
 	wgEgressChange func()
@@ -468,6 +472,12 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		log.Printf("[llmusage] create table: %v", err)
 	}
 	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
+	// The postgres host is pinned to /etc/hosts when the kernel tunnel brings
+	// the in-tunnel resolver up; resolve it from the same DSN the pool uses (a
+	// container may not expose the DSN via its process environment).
+	if u, perr := url.Parse(dsn); perr == nil && u.Hostname() != "" && net.ParseIP(u.Hostname()) == nil {
+		m.pgServiceHost = u.Hostname()
+	}
 	// Behind any proxy in the path (the recording proxy, the global egress proxy,
 	// or a custom tool's own proxy) the proxy chooses the address, so a target
 	// approval is name-only.
@@ -1228,7 +1238,7 @@ func (m *Manager) startWGProxy(ctx context.Context, hostname string, relayPort u
 			Endpoint:   endpoint,
 			LocalAddr:  local,
 			AllowCIDRs: []string{"172.16.0.0/12", "192.168.0.0/16", "10.0.0.0/8"},
-			HostNames:  pgHostNames(),
+			HostNames:  m.pgHostNames(),
 		}); err != nil {
 			if wgkernel.IsUp() {
 				_ = wgkernel.Down(context.Background())
@@ -1278,17 +1288,12 @@ func (m *Manager) startWGProxy(ctx context.Context, hostname string, relayPort u
 // pgHostNames returns the non-IP hosts the process must keep resolving after
 // resolv.conf switches into the tunnel (the Postgres service name plus the
 // host-gateway name the local LLM proxy profiles point at).
-func pgHostNames() []string {
+func (m *Manager) pgHostNames() []string {
 	names := []string{"host.docker.internal"}
-	dsn := strings.TrimSpace(os.Getenv("ARTEX_PG_DSN"))
-	if dsn == "" {
-		return names
+	if m.pgServiceHost != "" {
+		names = append(names, m.pgServiceHost)
 	}
-	u, err := url.Parse(dsn)
-	if err != nil || u.Hostname() == "" || net.ParseIP(u.Hostname()) != nil {
-		return names
-	}
-	return append(names, u.Hostname())
+	return names
 }
 
 // watchWGProxy keeps the tunnel up whenever Mullvad is enabled: it restarts
@@ -1309,8 +1314,13 @@ func (m *Manager) watchWGProxy() {
 		m.mu.RUnlock()
 		if wgkernel.IsUp() {
 			// Kernel tunnel: the kill-switch holds; only a stale handshake
-			// (>2 min) means the relay went away — rebuild then.
-			if _, age, err := wgkernel.Status(context.Background()); err == nil && age < 2*time.Minute {
+			// means the relay went away — rebuild then. WireGuard re-keys
+			// roughly every 120s and latest-handshakes only updates when the
+			// new handshake lands, so the age can legitimately approach
+			// 2 minutes: a 2-minute teardown would race a healthy rekey and
+			// rebuild a live tunnel every cycle (killing in-flight traffic).
+			// REJECT_AFTER_TIME is 180s — past that the session is truly dead.
+			if _, age, err := wgkernel.Status(context.Background()); err == nil && age < 3*time.Minute {
 				wasUp = true
 				continue
 			}
