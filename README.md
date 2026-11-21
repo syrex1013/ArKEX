@@ -313,9 +313,11 @@ worker remains confined to the intent it claimed.
   storage) stays direct by design.
 - **Kernel WireGuard mode (default when available)**: with `wireguard-tools`/`iproute2`/`iptables`
   installed and the `NET_ADMIN` capability granted (the shipped Dockerfile and compose file do
-  both), the tunnel is a real `arkexwg0` interface with a default-route kill-switch: every packet
-  in the container — including raw sockets that ignore `HTTP_PROXY` — leaves through the tunnel or
-  is dropped. Mode is picked via the `mullvad_mode` setting (`auto` | `kernel` | `netstack`;
+  both), the tunnel is a real `arkexwg0` interface with a default-route kill-switch: every unmarked
+  packet in the container — including raw sockets that ignore `HTTP_PROXY` — leaves through the
+  tunnel or is dropped. LLM provider sockets are SO_MARK'ed and policy-routed out the host
+  gateway, so control-plane LLM calls stay off Mullvad while task traffic stays fail-closed on
+  the tunnel. Mode is picked via the `mullvad_mode` setting (`auto` | `kernel` | `netstack`;
   `auto` prefers kernel when the host allows it). Postgres/docker networks are route exceptions;
   the Postgres hostname is pinned to `/etc/hosts` before DNS switches into the tunnel
   (`10.64.0.1`). The watchdog rebuilds the interface if the route dies and restarts handshakes
@@ -762,6 +764,10 @@ flowchart TB
 For the code-level map (execution flow, trust boundaries, decisions) see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); for startup, configuration precedence,
 backup and key rotation see [docs/OPS.md](docs/OPS.md).
+
+Deeper operator notes live in the in-repo wiki, [docs/wiki/](docs/wiki/README.md): task
+lifecycle, LLM profiles and failover, MCP servers, egress/Mullvad, and a symptom →
+cause troubleshooting table.
 
 ---
 

@@ -107,6 +107,8 @@ binary via `server/webui_embed.go` when built with `-tags embedui`.
 ## 7. Where to look next
 
 - `docs/OPS.md` for startup, configuration precedence, backup and key rotation.
+- `docs/wiki/` for the operator-level wiki: task lifecycle, LLM failover, MCP, egress/Mullvad
+  and a symptom → cause troubleshooting table.
 - `docs/vulnerability-traffic-evidence.md` for how a finding keeps its receipts.
 - `docs/traffic-rewrite-rules.md` for the rewrite engine.
 - `scripts/verify.sh` to reproduce the CI checks locally.
