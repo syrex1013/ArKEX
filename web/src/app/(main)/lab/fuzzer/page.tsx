@@ -47,7 +47,12 @@ export default function FuzzerPage() {
         <CardContent className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="fuzz-target">Target ref</Label>
-            <Input id="fuzz-target" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="binary path or harness id" />
+            <Input
+              id="fuzz-target"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder="binary path or harness id"
+            />
           </div>
           <Button onClick={run} disabled={busy || !target.trim()}>
             {busy ? "Launching…" : "Launch fuzz job"}

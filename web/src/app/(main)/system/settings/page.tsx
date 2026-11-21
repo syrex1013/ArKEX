@@ -2,7 +2,15 @@
 
 import * as React from "react";
 
-import { CpuIcon, FlaskConicalIcon, KeyboardIcon, LockIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
+import {
+  CpuIcon,
+  FlaskConicalIcon,
+  KeyboardIcon,
+  LockIcon,
+  RadioTowerIcon,
+  SearchIcon,
+  ShieldAlertIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -285,7 +293,9 @@ export default function SystemSettingsPage() {
       .setSettings({ global_proxy: globalProxyInput.trim() })
       .then((s) => {
         apply(s);
-        toast.success(globalProxyInput.trim() ? t("Saved global proxy") : t("Cleared global proxy (direct connection)"));
+        toast.success(
+          globalProxyInput.trim() ? t("Saved global proxy") : t("Cleared global proxy (direct connection)"),
+        );
       })
       .catch((e) => toast.error(t("Save failed: {error}", { error: (e as Error).message })))
       .finally(() => setSavingGlobalProxy(false));
@@ -297,7 +307,9 @@ export default function SystemSettingsPage() {
       .setSettings({ mullvad_proxy_enabled: on })
       .then((s) => {
         apply(s);
-        toast.success(on ? t("Mullvad proxy enabled · use the C2 page to bring it up per relay") : t("Mullvad proxy disabled"));
+        toast.success(
+          on ? t("Mullvad proxy enabled · use the C2 page to bring it up per relay") : t("Mullvad proxy disabled"),
+        );
       })
       .catch((e) => {
         setMullvadEnabled(!on);
@@ -359,7 +371,12 @@ export default function SystemSettingsPage() {
       })
       .then((r) => {
         if (r.ok)
-          toast.success(t("Search test succeeded · {backend} returned {count} results", { backend: r.backend ?? "", count: r.count ?? 0 }));
+          toast.success(
+            t("Search test succeeded · {backend} returned {count} results", {
+              backend: r.backend ?? "",
+              count: r.count ?? 0,
+            }),
+          );
         else toast.error(t("Search test failed: {error}", { error: r.error || t("unknown error") }));
       })
       .catch((e) => toast.error(t("Search test failed: {error}", { error: (e as Error).message })))
@@ -402,7 +419,9 @@ export default function SystemSettingsPage() {
           </CardHeader>
           <CardContent className="flex items-center justify-between gap-4">
             <Label htmlFor="traffic-capture" className="text-sm font-normal text-muted-foreground">
-              {trafficCapture ? t("On · recording traffic and injecting proxy") : t("Off · no recording, no proxy injection")}
+              {trafficCapture
+                ? t("On · recording traffic and injecting proxy")
+                : t("Off · no recording, no proxy injection")}
             </Label>
             <Switch
               id="traffic-capture"
@@ -416,7 +435,7 @@ export default function SystemSettingsPage() {
         <StorageGovernorCard />
         <ImportArtexCard />
         <TeamUsersCard />
-      <NoiseProfileCard />
+        <NoiseProfileCard />
 
         <Card className="mb-4 break-inside-avoid md:mb-6">
           <CardHeader>
@@ -550,7 +569,11 @@ export default function SystemSettingsPage() {
                   id="mullvad-key"
                   type="password"
                   autoComplete="off"
-                  placeholder={mullvadKeySet ? t("configured — type a new key to replace, empty to keep") : t("Base64 WireGuard private key (empty = keep stored)")}
+                  placeholder={
+                    mullvadKeySet
+                      ? t("configured — type a new key to replace, empty to keep")
+                      : t("Base64 WireGuard private key (empty = keep stored)")
+                  }
                   value={mullvadKeyInput}
                   disabled={!loaded || savingMullvadKey}
                   onChange={(e) => setMullvadKeyInput(e.target.value)}
@@ -600,7 +623,9 @@ export default function SystemSettingsPage() {
                   disabled={!loaded || savingMullvad}
                   onChange={(e) => setMullvadAddress(e.target.value)}
                 />
-                <p className="text-xs text-muted-foreground">{t("Mullvad device config IP — set before bringing the tunnel up")}</p>
+                <p className="text-xs text-muted-foreground">
+                  {t("Mullvad device config IP — set before bringing the tunnel up")}
+                </p>
               </div>
             </div>
             <div className="flex flex-col gap-2">
@@ -813,7 +838,9 @@ export default function SystemSettingsPage() {
                 </div>
                 {braveNeedsKey && (
                   <p className="text-xs text-amber-500">
-                    {t("Brave is selected but no key is configured — the search tool stays disabled until you save one.")}
+                    {t(
+                      "Brave is selected but no key is configured — the search tool stays disabled until you save one.",
+                    )}
                   </p>
                 )}
                 <p className="text-muted-foreground text-xs">
@@ -833,7 +860,9 @@ export default function SystemSettingsPage() {
                     id="tavily-key"
                     type="password"
                     autoComplete="off"
-                    placeholder={tavilyKeySet ? t("Configured (leave empty to keep)") : t("Enter Tavily API Key (tvly-…)")}
+                    placeholder={
+                      tavilyKeySet ? t("Configured (leave empty to keep)") : t("Enter Tavily API Key (tvly-…)")
+                    }
                     value={tavilyKeyInput}
                     disabled={!loaded || savingTavilyKey}
                     onChange={(e) => setTavilyKeyInput(e.target.value)}
@@ -848,10 +877,14 @@ export default function SystemSettingsPage() {
                 </div>
                 {webSearch && backend === "tavily" && !tavilyKeySet && (
                   <p className="text-xs text-amber-500">
-                    {t("Tavily is selected but no key is configured — the search tool stays disabled until you save one.")}
+                    {t(
+                      "Tavily is selected but no key is configured — the search tool stays disabled until you save one.",
+                    )}
                   </p>
                 )}
-                <p className="text-muted-foreground text-xs">{t("Register and get an API key at https://tavily.com.")}</p>
+                <p className="text-muted-foreground text-xs">
+                  {t("Register and get an API key at https://tavily.com.")}
+                </p>
               </div>
             )}
 

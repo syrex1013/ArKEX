@@ -27,7 +27,9 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
+import { intlLocale, t } from "@/i18n";
 import { api } from "@/lib/api";
+import { setVisibleInterval } from "@/lib/polling";
 import { taskAssetTypeLabel } from "@/lib/task-assets";
 import type {
   AssetInterceptKind,
@@ -42,8 +44,6 @@ import type {
   TaskNode,
   TaskScopeRow,
 } from "@/lib/types";
-import { setVisibleInterval } from "@/lib/polling";
-import { intlLocale, t } from "@/i18n";
 
 // Compact token count formatting (12345 → 12.3k, 2000000 → 2M).
 function fmtTokens(n: number): string {
@@ -577,7 +577,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             </div>
           ) : (
             <p className="text-muted-foreground text-sm">
-              {t("No goals yet. Once added, the planner dispatches exploration intents from them and judges completion.")}
+              {t(
+                "No goals yet. Once added, the planner dispatches exploration intents from them and judges completion.",
+              )}
             </p>
           )}
         </CardContent>
@@ -721,7 +723,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <TargetIcon className="size-4 text-emerald-500" /> {t("Asset test coverage")}
-              <span className="text-muted-foreground text-xs font-normal">{t("(rough estimate, for reference only)")}</span>
+              <span className="text-muted-foreground text-xs font-normal">
+                {t("(rough estimate, for reference only)")}
+              </span>
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">

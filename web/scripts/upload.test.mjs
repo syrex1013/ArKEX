@@ -1,10 +1,11 @@
+import ts from "typescript";
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import ts from "typescript";
 
 const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = ts.transpileModule(fs.readFileSync(path.join(web, "src/lib/api.ts"), "utf8"), {
@@ -64,17 +65,17 @@ for (const scope of ["task", "session", "staging"]) {
       assert.equal(s.requests[0].url, "/api/chat/upload?scope=" + scope + "&id=42");
       assert.equal(s.requests[0].init.method, "POST");
       assert.equal(s.requests[0].init.body, s.forms[0]);
-      assert.deepEqual(s.forms[0].fields, files.map((file) => ["file", file]));
+      assert.deepEqual(
+        s.forms[0].fields,
+        files.map((file) => ["file", file]),
+      );
     }
   });
 }
 
 test("mock uploads enforce the same combined limit", async () => {
   const s = setup(true);
-  await assert.rejects(
-    s.api.chatUpload("staging", "42", [{ name: "app.apk", size: 512 * MiB + 1 }]),
-    /512 MiB/,
-  );
+  await assert.rejects(s.api.chatUpload("staging", "42", [{ name: "app.apk", size: 512 * MiB + 1 }]), /512 MiB/);
   const result = await s.api.chatUpload("staging", "42", [{ name: "app.apk", size: 512 * MiB }]);
   assert.equal(result.attachments[0].size, 512 * MiB);
   assert.equal(s.requests.length, 0);

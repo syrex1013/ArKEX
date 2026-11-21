@@ -27,9 +27,10 @@ export function ImportArtexCard() {
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">scripts/backup.sh --with-data</code>
           </li>
           <li>
-            {t("Copy")} <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">backups/artex-db-*.sql.gz</code>,{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">backups/artex-data-*.tar.gz</code>, {t("and")}{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">keys/</code> {t("here.")}
+            {t("Copy")}{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">backups/artex-db-*.sql.gz</code>,{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">backups/artex-data-*.tar.gz</code>,{" "}
+            {t("and")} <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">keys/</code> {t("here.")}
           </li>
           <li>
             <code className="block whitespace-pre-wrap rounded bg-muted px-2 py-2 font-mono text-xs">

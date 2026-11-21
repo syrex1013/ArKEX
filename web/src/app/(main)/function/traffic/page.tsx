@@ -41,13 +41,13 @@ import { SortableHead } from "@/components/ui/sortable-head";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api } from "@/lib/api";
 import { useEngagementSelection } from "@/hooks/use-engagement";
+import { intlLocale, t } from "@/i18n";
+import { api } from "@/lib/api";
 import { setVisibleInterval } from "@/lib/polling";
 import { useStoredSortPreference } from "@/lib/sort-preference";
 import type { TrafficDetail, TrafficExchange, TrafficHost, TrafficResp } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { intlLocale, t } from "@/i18n";
 
 import { ReplayPanel } from "./_components/replay-panel";
 import { StreamMessagesPanel } from "./_components/stream-messages";
@@ -91,34 +91,49 @@ function MethodBadge({ method }: { method: string }) {
 function EgressBadge({ e }: { e: TrafficExchange }) {
   if (e.via === "external") {
     return (
-      <Badge variant="outline" className="shrink-0 border-border bg-transparent px-1.5 py-0 text-[10px] font-medium text-muted-foreground">
+      <Badge
+        variant="outline"
+        className="shrink-0 border-border bg-transparent px-1.5 py-0 text-[10px] font-medium text-muted-foreground"
+      >
         {t("External")}
       </Badge>
     );
   }
   if (e.egress === "tunneled") {
     return (
-      <Badge variant="outline" className="shrink-0 border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+      <Badge
+        variant="outline"
+        className="shrink-0 border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
+      >
         {t("VPN")}
       </Badge>
     );
   }
   if ((e.egress ?? "").startsWith("proxied")) {
     return (
-      <Badge variant="outline" className="shrink-0 border-blue-500/30 bg-blue-500/10 px-1.5 py-0 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+      <Badge
+        variant="outline"
+        className="shrink-0 border-blue-500/30 bg-blue-500/10 px-1.5 py-0 text-[10px] font-medium text-blue-600 dark:text-blue-400"
+      >
         {t("Proxy")}
       </Badge>
     );
   }
   if (e.egress === "direct") {
     return (
-      <Badge variant="outline" className="shrink-0 border-red-500/30 bg-red-500/10 px-1.5 py-0 text-[10px] font-medium text-red-600 dark:text-red-400">
+      <Badge
+        variant="outline"
+        className="shrink-0 border-red-500/30 bg-red-500/10 px-1.5 py-0 text-[10px] font-medium text-red-600 dark:text-red-400"
+      >
         {t("Direct")}
       </Badge>
     );
   }
   return (
-    <Badge variant="outline" className="shrink-0 border-border bg-transparent px-1.5 py-0 text-[10px] font-medium text-muted-foreground">
+    <Badge
+      variant="outline"
+      className="shrink-0 border-border bg-transparent px-1.5 py-0 text-[10px] font-medium text-muted-foreground"
+    >
       {t("No VPN data")}
     </Badge>
   );

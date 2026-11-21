@@ -17,8 +17,6 @@ import type {
   Asset,
   AssetInterceptRule,
   AssetInterceptRuleInput,
-  TaskCredential,
-  TaskCredentialInput,
   Audit,
   BatchCategoryItem,
   BatchControlItem,
@@ -45,8 +43,8 @@ import type {
   FindingDeepenResponse,
   FindingGroupsPage,
   FindingQuery,
-  FindingRetest,
   FindingReportState,
+  FindingRetest,
   FindingStats,
   FindingStatus,
   FindingsPage,
@@ -93,6 +91,8 @@ import type {
   TaskAssetScopeMutation,
   TaskCategory,
   TaskConstraint,
+  TaskCredential,
+  TaskCredentialInput,
   TaskGoal,
   TaskLLMResolutions,
   TaskNode,
@@ -287,7 +287,8 @@ export const api = {
     post<{ results: Array<Record<string, unknown>> }>("/lab/desync", { url, task_id }),
   labCPGIndex: (path: string, task_id: string, language: string) =>
     post<{ sinks: Array<Record<string, unknown>>; count: number }>("/lab/cpg/index", { path, task_id, language }),
-  labCPGSinks: (task: string) => get<{ sinks: Array<Record<string, unknown>> }>(`/lab/cpg/sinks?task=${encodeURIComponent(task)}`),
+  labCPGSinks: (task: string) =>
+    get<{ sinks: Array<Record<string, unknown>> }>(`/lab/cpg/sinks?task=${encodeURIComponent(task)}`),
   labFuzz: (body: { task_id: string; kind: string; target: string; target_kind?: string }) =>
     post<{ job_id: number }>("/lab/fuzz", body),
   oastPayload: (tag: string, task_id: string, intent_id?: string) =>
@@ -302,29 +303,89 @@ export const api = {
   c2Connect: (config_path?: string) => post<{ ok: boolean }>("/c2/connect", { config_path }),
   c2Disconnect: () => post<{ ok: boolean }>("/c2/disconnect"),
   c2Sessions: () =>
-    get<{ sessions: Array<{ id: string; name: string; hostname?: string; username?: string; os?: string; arch?: string; remote?: string; alive?: boolean; last_seen?: string }> }>("/c2/sessions"),
+    get<{
+      sessions: Array<{
+        id: string;
+        name: string;
+        hostname?: string;
+        username?: string;
+        os?: string;
+        arch?: string;
+        remote?: string;
+        alive?: boolean;
+        last_seen?: string;
+      }>;
+    }>("/c2/sessions"),
   c2Beacons: () =>
-    get<{ beacons: Array<{ id: string; name: string; hostname?: string; username?: string; os?: string; arch?: string; remote?: string; alive?: boolean; interval?: number; last_seen?: string }> }>("/c2/beacons"),
+    get<{
+      beacons: Array<{
+        id: string;
+        name: string;
+        hostname?: string;
+        username?: string;
+        os?: string;
+        arch?: string;
+        remote?: string;
+        alive?: boolean;
+        interval?: number;
+        last_seen?: string;
+      }>;
+    }>("/c2/beacons"),
   c2BeaconTasks: (id: string) =>
-    get<{ tasks: Array<{ id: string; description?: string; state?: string; sent_at?: string; completed_at?: string }> }>(
-      `/c2/beacons/${encodeURIComponent(id)}/tasks`,
-    ),
+    get<{
+      tasks: Array<{ id: string; description?: string; state?: string; sent_at?: string; completed_at?: string }>;
+    }>(`/c2/beacons/${encodeURIComponent(id)}/tasks`),
   c2Exec: (target: string, path: string, args: string[], timeout_seconds?: number) =>
-    post<{ target: string; status: number; stdout: string; stderr: string }>("/c2/exec", { target, path, args, timeout_seconds }),
+    post<{ target: string; status: number; stdout: string; stderr: string }>("/c2/exec", {
+      target,
+      path,
+      args,
+      timeout_seconds,
+    }),
   c2Kill: (target: string) => post<{ ok: boolean }>("/c2/kill", { target }),
-  c2Generate: (body: { goos: string; goarch: string; format: string; name?: string; c2_urls?: string[]; is_beacon: boolean; interval_seconds?: number; retry_seconds?: number }) =>
-    post<{ path: string }>("/c2/implants/generate", body),
+  c2Generate: (body: {
+    goos: string;
+    goarch: string;
+    format: string;
+    name?: string;
+    c2_urls?: string[];
+    is_beacon: boolean;
+    interval_seconds?: number;
+    retry_seconds?: number;
+  }) => post<{ path: string }>("/c2/implants/generate", body),
 
   // Mullvad WireGuard egress
   mullvadServers: (ping: boolean) =>
-    get<{ servers: Array<{ hostname: string; ipv4?: string; country?: string; country_code?: string; city?: string; ping_ms?: number }> }>(
-      ping ? "/mullvad/servers?ping=1" : "/mullvad/servers",
-    ),
+    get<{
+      servers: Array<{
+        hostname: string;
+        ipv4?: string;
+        country?: string;
+        country_code?: string;
+        city?: string;
+        ping_ms?: number;
+      }>;
+    }>(ping ? "/mullvad/servers?ping=1" : "/mullvad/servers"),
   mullvadUp: (hostname: string, port?: number) =>
-    post<{ ok: boolean; conf_path: string; note?: string; mode?: string; proxy?: string }>("/mullvad/up", { hostname, port }),
+    post<{ ok: boolean; conf_path: string; note?: string; mode?: string; proxy?: string }>("/mullvad/up", {
+      hostname,
+      port,
+    }),
   mullvadDown: () => post<{ ok: boolean }>("/mullvad/down"),
   mullvadStatus: () =>
-    get<{ wg_quick: boolean; active: boolean; interface: string; session_up?: boolean; handshake_seen?: boolean; task_egress_blocked?: boolean; address_set?: boolean; proxy_enabled?: boolean; proxy_port?: number; mode?: string; proxy?: string }>("/mullvad/status"),
+    get<{
+      wg_quick: boolean;
+      active: boolean;
+      interface: string;
+      session_up?: boolean;
+      handshake_seen?: boolean;
+      task_egress_blocked?: boolean;
+      address_set?: boolean;
+      proxy_enabled?: boolean;
+      proxy_port?: number;
+      mode?: string;
+      proxy?: string;
+    }>("/mullvad/status"),
   mullvadEgress: () => get<MullvadEgress>("/mullvad/egress"),
 
   // Backend application version (injected via ldflags at release, default "dev").
@@ -339,7 +400,10 @@ export const api = {
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
   authMe: () => get<{ username: string; role: string; name: string }>("/auth/me"),
-  users: () => get<{ users: Array<{ id: string; username: string; role: string; disabled: boolean; builtin?: boolean }> }>("/users"),
+  users: () =>
+    get<{ users: Array<{ id: string; username: string; role: string; disabled: boolean; builtin?: boolean }> }>(
+      "/users",
+    ),
   createUser: (username: string, password: string, role: string) =>
     post<{ id: string; username: string; role: string }>("/users", { username, password, role }),
   disableUser: (id: string) => post<{ ok: boolean }>(`/users/${encodeURIComponent(id)}/disable`),
@@ -800,7 +864,13 @@ export const api = {
   // Save a vulnerability's name/class/severity in one call (inline edit in the findings list); only present fields are sent.
   updateFinding: (
     id: string,
-    fields: { name?: string; vulnclass?: string; severity?: Severity; status?: FindingStatus; report_state?: FindingReportState },
+    fields: {
+      name?: string;
+      vulnclass?: string;
+      severity?: Severity;
+      status?: FindingStatus;
+      report_state?: FindingReportState;
+    },
   ) => patch<Finding>(`/exploration/findings/${id}`, fields),
   // Delete a vulnerability: removes the findings record + the source exploration node (gone from the findings list, the task findings tab, and the exploration graph together).
   deleteFinding: (id: string) => del<{ deleted: boolean; id: number }>(`/exploration/findings/${id}`),
@@ -988,8 +1058,7 @@ export const api = {
   // Channels are multi-instance resources (several bots of the same kind, each with its own
   // filter rules), so they form their own group instead of the flat settings key/value store.
   notifyMeta: () => get<NotificationMeta>(`/notify/meta`),
-  notifyChannels: () =>
-    get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
+  notifyChannels: () => get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
   notifyCreateChannel: (payload: {
     name: string;
     kind: string;
@@ -1273,8 +1342,12 @@ export const api = {
     t: Pick<Tool, "description" | "schema" | "agents" | "enabled" | "kind" | "exec" | "deferred">,
   ) => put<{ ok: boolean }>(`/tools/custom/${key}`, t),
   deleteCustomTool: (key: string) => del<{ deleted: string }>(`/tools/custom/${key}`),
-  testCustomTool: (body: { key?: string; kind: string; exec: Record<string, unknown>; params: Record<string, unknown> }) =>
-    post<{ output: string; is_error: boolean }>("/tools/custom/test", body),
+  testCustomTool: (body: {
+    key?: string;
+    kind: string;
+    exec: Record<string, unknown>;
+    params: Record<string, unknown>;
+  }) => post<{ output: string; is_error: boolean }>("/tools/custom/test", body),
   detectPython: () => post<{ python_interpreter: string }>("/settings/python/detect", {}),
 
   // ---- mcp ----

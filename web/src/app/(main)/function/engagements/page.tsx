@@ -1,16 +1,13 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
-import { toast } from "sonner";
-import { ExternalLinkIcon, FolderOpenIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import Link from "next/link";
+
+import { ExternalLinkIcon, FolderOpenIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { toast } from "sonner";
+
+import { StatusBadge } from "@/components/status-badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,19 +18,18 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import { StatusBadge } from "@/components/status-badge";
-import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Textarea } from "@/components/ui/textarea";
+import { useEngagementSelection, useEngagements } from "@/hooks/use-engagement";
 import { intlLocale, t } from "@/i18n";
 import { api } from "@/lib/api";
-import { useEngagementSelection, useEngagements } from "@/hooks/use-engagement";
 import type { EngagementWithStats } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 type FormState = { name: string; description: string };
 const emptyForm: FormState = { name: "", description: "" };
@@ -143,9 +139,7 @@ export default function EngagementsPage() {
                 <div className="flex items-center gap-2">
                   <FolderOpenIcon className="text-muted-foreground size-4 shrink-0" />
                   <CardTitle className="truncate text-base">{e.name}</CardTitle>
-                  {selected && (
-                    <Badge className="ml-auto font-normal">{t("Active")}</Badge>
-                  )}
+                  {selected && <Badge className="ml-auto font-normal">{t("Active")}</Badge>}
                   <div className="ml-auto flex items-center gap-1" onClick={(ev) => ev.stopPropagation()}>
                     {!selected && (
                       <Button
@@ -158,20 +152,10 @@ export default function EngagementsPage() {
                         <FolderOpenIcon />
                       </Button>
                     )}
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      aria-label={t("Edit")}
-                      onClick={() => openEdit(e)}
-                    >
+                    <Button size="icon" variant="outline" aria-label={t("Edit")} onClick={() => openEdit(e)}>
                       <PencilIcon />
                     </Button>
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      aria-label={t("Delete")}
-                      onClick={() => setDeleting(e)}
-                    >
+                    <Button size="icon" variant="outline" aria-label={t("Delete")} onClick={() => setDeleting(e)}>
                       <Trash2Icon className="text-destructive" />
                     </Button>
                   </div>
@@ -216,10 +200,7 @@ export default function EngagementsPage() {
                     <span className="text-muted-foreground text-xs">{t("No findings")}</span>
                   )}
                 </div>
-                <div
-                  className="flex items-center justify-between"
-                  onClick={(ev) => ev.stopPropagation()}
-                >
+                <div className="flex items-center justify-between" onClick={(ev) => ev.stopPropagation()}>
                   <span className="text-muted-foreground text-xs">{fmtDate(e.created_at)}</span>
                   <Button asChild size="sm" variant="ghost">
                     <Link href="/function/tasks">
@@ -244,9 +225,7 @@ export default function EngagementsPage() {
         <SheetContent side="right" className="w-full data-[side=right]:sm:max-w-lg">
           <SheetHeader>
             <SheetTitle>{editing ? editing.name : t("New engagement")}</SheetTitle>
-            <SheetDescription>
-              {t("An engagement groups related tasks and their findings.")}
-            </SheetDescription>
+            <SheetDescription>{t("An engagement groups related tasks and their findings.")}</SheetDescription>
           </SheetHeader>
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4">
             <div className="grid gap-4 py-4">
@@ -281,9 +260,7 @@ export default function EngagementsPage() {
       <AlertDialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              {t("Delete engagement \"{name}\"?", { name: deleting?.name ?? "" })}
-            </AlertDialogTitle>
+            <AlertDialogTitle>{t('Delete engagement "{name}"?', { name: deleting?.name ?? "" })}</AlertDialogTitle>
             <AlertDialogDescription className="[overflow-wrap:anywhere]">
               {t(
                 "Its {count} tasks will be detached and kept, but they will no longer belong to this engagement. This action cannot be undone.",
@@ -293,10 +270,13 @@ export default function EngagementsPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("Cancel")}</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={(ev) => {
-              ev.preventDefault();
-              void removeEngagement();
-            }}>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={(ev) => {
+                ev.preventDefault();
+                void removeEngagement();
+              }}
+            >
               {t("Delete")}
             </AlertDialogAction>
           </AlertDialogFooter>

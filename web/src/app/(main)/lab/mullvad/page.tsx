@@ -14,7 +14,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { api } from "@/lib/api";
 
 export default function MullvadPage() {
-  const [servers, setServers] = useState<Array<{ hostname: string; ipv4?: string; country?: string; country_code?: string; city?: string; ping_ms?: number }>>([]);
+  const [servers, setServers] = useState<
+    Array<{ hostname: string; ipv4?: string; country?: string; country_code?: string; city?: string; ping_ms?: number }>
+  >([]);
   const [sel, setSel] = useState("");
   const [status, setStatus] = useState<{ wg_quick: boolean; active: boolean; interface: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -86,19 +88,35 @@ export default function MullvadPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" onClick={() => load(false)} disabled={busy}>Refresh list</Button>
-            <Button variant="outline" onClick={() => load(true)} disabled={busy}>Refresh with ping</Button>
-            <Button onClick={up} disabled={busy || !sel}>Bring up</Button>
-            <Button variant="outline" onClick={down} disabled={busy}>Tear down</Button>
+            <Button variant="outline" onClick={() => load(false)} disabled={busy}>
+              Refresh list
+            </Button>
+            <Button variant="outline" onClick={() => load(true)} disabled={busy}>
+              Refresh with ping
+            </Button>
+            <Button onClick={up} disabled={busy || !sel}>
+              Bring up
+            </Button>
+            <Button variant="outline" onClick={down} disabled={busy}>
+              Tear down
+            </Button>
             <span className="text-muted-foreground text-sm">
-              {status ? (status.active ? `active: ${status.interface}` : status.wg_quick ? "wg-quick ready, down" : "wg-quick unavailable (manual apply)") : ""}
+              {status
+                ? status.active
+                  ? `active: ${status.interface}`
+                  : status.wg_quick
+                    ? "wg-quick ready, down"
+                    : "wg-quick unavailable (manual apply)"
+                : ""}
             </span>
           </div>
           {note ? <p className="text-muted-foreground text-xs">{note}</p> : null}
           <div className="space-y-1.5">
             <Label>Server</Label>
             <Select value={sel} onValueChange={setSel}>
-              <SelectTrigger className="w-full sm:w-96"><SelectValue placeholder={servers.length ? "choose server" : "load list first"} /></SelectTrigger>
+              <SelectTrigger className="w-full sm:w-96">
+                <SelectValue placeholder={servers.length ? "choose server" : "load list first"} />
+              </SelectTrigger>
               <SelectContent className="max-h-72">
                 {servers.map((srv) => (
                   <SelectItem key={srv.hostname} value={srv.hostname}>

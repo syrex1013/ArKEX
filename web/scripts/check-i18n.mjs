@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,8 +24,7 @@ const literalCall = /(?:^|[^\w$.])t\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*
 for (const file of files) {
   const src = readFileSync(file, "utf8");
   for (const m of src.matchAll(literalCall)) {
-    const key =
-      m[1] !== undefined ? JSON.parse(`"${m[1]}"`) : m[2].replace(/\\(['\\])/g, "$1");
+    const key = m[1] !== undefined ? JSON.parse(`"${m[1]}"`) : m[2].replace(/\\(['\\])/g, "$1");
     if (!calls.has(key)) calls.set(key, file.slice(root.length + 1));
   }
 }
@@ -40,7 +39,7 @@ function placeholders(s) {
 const missing = [];
 const mismatch = [];
 for (const [key, file] of calls) {
-  if (!Object.prototype.hasOwnProperty.call(dict, key)) {
+  if (!Object.hasOwn(dict, key)) {
     missing.push(`${file}: ${JSON.stringify(key)}`);
     continue;
   }
@@ -59,6 +58,4 @@ if (missing.length || mismatch.length) {
   process.exit(1);
 }
 
-console.log(
-  `i18n: ${calls.size} literal keys checked against ${Object.keys(dict).length} tr.json entries`,
-);
+console.log(`i18n: ${calls.size} literal keys checked against ${Object.keys(dict).length} tr.json entries`);

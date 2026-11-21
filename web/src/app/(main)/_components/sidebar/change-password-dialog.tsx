@@ -26,7 +26,7 @@ export function ChangePasswordDialog({
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
 }) {
-  const username = auth.getCurrentUser()?.username ?? "ARTEX";
+  const username = auth.getCurrentUser()?.username;
   const [oldPassword, setOldPassword] = React.useState("");
   const [newPassword, setNewPassword] = React.useState("");
   const [confirmPassword, setConfirmPassword] = React.useState("");

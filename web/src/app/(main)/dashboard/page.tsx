@@ -22,7 +22,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { Progress } from "@/components/ui/progress";
 import { useEngagementSelection } from "@/hooks/use-engagement";
+import { t } from "@/i18n";
 import { api } from "@/lib/api";
+import { setVisibleInterval } from "@/lib/polling";
 import type {
   Activity,
   Agent,
@@ -41,8 +43,6 @@ import type {
   UsageStats,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { t } from "@/i18n";
-import { setVisibleInterval } from "@/lib/polling";
 
 // ── chart constants ───────────────────────────────────────────────────────────
 
@@ -169,9 +169,7 @@ export default function DashboardPage() {
           signature = nextSignature;
           // "0"/empty = all engagements; otherwise keep tasks bound to the selection.
           setTasks(
-            engagementId === "0"
-              ? tr.tasks
-              : tr.tasks.filter((t) => String(t.engagement_id ?? "") === engagementId),
+            engagementId === "0" ? tr.tasks : tr.tasks.filter((t) => String(t.engagement_id ?? "") === engagementId),
           );
         }
       } catch {

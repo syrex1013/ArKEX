@@ -1,12 +1,9 @@
 "use client";
 
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  SidebarMenu,
-  SidebarMenuItem,
-} from "@/components/ui/sidebar";
-import { t } from "@/i18n";
+import { SidebarMenu, SidebarMenuItem } from "@/components/ui/sidebar";
 import { useEngagementSelection, useEngagements } from "@/hooks/use-engagement";
+import { t } from "@/i18n";
 
 export function EngagementSwitcher() {
   const { engagements } = useEngagements();

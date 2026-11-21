@@ -56,17 +56,29 @@ export default function CpgPage() {
       <Card>
         <CardHeader>
           <CardTitle>Code Property Graph</CardTitle>
-          <CardDescription>Sink indexer over harvested source under data/lab (or abs with ARKEX_LAB_ALLOW_ABS=1).</CardDescription>
+          <CardDescription>
+            Sink indexer over harvested source under data/lab (or abs with ARKEX_LAB_ALLOW_ABS=1).
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5 sm:col-span-2">
               <Label htmlFor="cpg-path">Source path</Label>
-              <Input id="cpg-path" value={repoPath} onChange={(e) => setRepoPath(e.target.value)} placeholder="relative to data/lab or absolute" />
+              <Input
+                id="cpg-path"
+                value={repoPath}
+                onChange={(e) => setRepoPath(e.target.value)}
+                placeholder="relative to data/lab or absolute"
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="cpg-lang">Language</Label>
-              <Input id="cpg-lang" value={language} onChange={(e) => setLanguage(e.target.value)} placeholder="auto|go|js|py|…" />
+              <Input
+                id="cpg-lang"
+                value={language}
+                onChange={(e) => setLanguage(e.target.value)}
+                placeholder="auto|go|js|py|…"
+              />
             </div>
           </div>
           <Button onClick={run} disabled={busy || !repoPath.trim()}>
@@ -76,7 +88,8 @@ export default function CpgPage() {
             {sinks.map((s, i) => (
               <li key={i} className="rounded-md border border-border px-3 py-2 font-mono text-xs">
                 <div>
-                  {(s.Kind ?? s.sink_kind) as string} · {(s.FilePath ?? s.file_path) as string}:{(s.LineNo ?? s.line_no) as number}
+                  {(s.Kind ?? s.sink_kind) as string} · {(s.FilePath ?? s.file_path) as string}:
+                  {(s.LineNo ?? s.line_no) as number}
                 </div>
                 <div className="text-muted-foreground mt-1">{(s.SourceLine ?? s.source_line) as string}</div>
               </li>

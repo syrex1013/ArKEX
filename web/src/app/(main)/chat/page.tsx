@@ -22,10 +22,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { ApprovalExecutionFocus, useApprovalFocus, useApprovalHistory } from "@/components/approval-execution-focus";
 import { MentionTextarea } from "@/components/mention-textarea";
 import { SideQuestionButton, SideQuestionWorkspace } from "@/components/side-question-workspace";
 import { TodoPopover } from "@/components/todo-popover";
-import { ApprovalExecutionFocus, useApprovalFocus, useApprovalHistory } from "@/components/approval-execution-focus";
 import { Transcript } from "@/components/transcript";
 import {
   AlertDialog,
@@ -52,8 +52,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { useSideQuestions } from "@/hooks/use-side-questions";
 import { useEngagementSelection } from "@/hooks/use-engagement";
+import { useSideQuestions } from "@/hooks/use-side-questions";
+import { intlLocale, t } from "@/i18n";
 import { mergeActivities } from "@/lib/activity-merge";
 import { api } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
@@ -61,7 +62,6 @@ import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.
 import { isBtwCommand } from "@/lib/side-questions";
 import type { Activity, Agent, ChatAttachment, Conversation, LLMProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { intlLocale, t } from "@/i18n";
 
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
 function fmtBytes(n: number): string {
@@ -620,14 +620,23 @@ function ChatView({
     };
   }, [running, conv.id, onTitleMaybeChanged]);
 
-  const loadFocusPage = React.useCallback((before: number) => api.conversationHistory(conv.id, before, HISTORY_PAGE), [conv.id]);
+  const loadFocusPage = React.useCallback(
+    (before: number) => api.conversationHistory(conv.id, before, HISTORY_PAGE),
+    [conv.id],
+  );
   const mergeFocusPage = React.useCallback((page: { items: Activity[]; hasMore: boolean }) => {
     setMessages((prev) => mergeActivities(page.items, prev));
     earliestRef.current = page.items[0]?.seq ?? earliestRef.current;
     hasMoreRef.current = page.hasMore;
     setHasMore(page.hasMore);
   }, []);
-  const focusHistory = useApprovalHistory(approvalFocus.state?.source, historyLoaded, messages, loadFocusPage, mergeFocusPage);
+  const focusHistory = useApprovalHistory(
+    approvalFocus.state?.source,
+    historyLoaded,
+    messages,
+    loadFocusPage,
+    mergeFocusPage,
+  );
 
   // ---- transcript auto-scroll (open → bottom; stick to bottom unless scrolled up) ----
   const contentRef = React.useRef<HTMLDivElement | null>(null);
@@ -819,9 +828,17 @@ function ChatView({
           ) : (
             <>
               {hasMore && (
-                <div className="text-muted-foreground/70 pb-2 text-center text-[11px]">{t("Scroll up to load earlier messages…")}</div>
+                <div className="text-muted-foreground/70 pb-2 text-center text-[11px]">
+                  {t("Scroll up to load earlier messages…")}
+                </div>
               )}
-              <Transcript activity={messages} live={running} chat fetchDetail={fetchDetail} focusedSeq={focusHistory.ready ? approvalFocus.state?.source?.seq : undefined} />
+              <Transcript
+                activity={messages}
+                live={running}
+                chat
+                fetchDetail={fetchDetail}
+                focusedSeq={focusHistory.ready ? approvalFocus.state?.source?.seq : undefined}
+              />
             </>
           )}
         </div>
@@ -958,9 +975,7 @@ const ConversationItem = React.memo(function ConversationItem({
               </Badge>
             ) : null}
           </div>
-          {conv.created_by ? (
-            <div className="text-muted-foreground truncate text-[11px]">{conv.created_by}</div>
-          ) : null}
+          {conv.created_by ? <div className="text-muted-foreground truncate text-[11px]">{conv.created_by}</div> : null}
           <div className="text-muted-foreground flex min-w-0 items-center gap-1 text-[11px]">
             {showAgent && (
               <>
@@ -1058,10 +1073,16 @@ function AgentGroupHeader({
       <Bot className="size-3 shrink-0" />
       <span className="min-w-0 flex-1 truncate">{group.name}</span>
       {collapsed && hasActive && (
-        <span className="size-1.5 shrink-0 rounded-full bg-primary" title={t("The current conversation is in this group")} />
+        <span
+          className="size-1.5 shrink-0 rounded-full bg-primary"
+          title={t("The current conversation is in this group")}
+        />
       )}
       {group.runningCount > 0 && (
-        <Spinner className="size-3 shrink-0" aria-label={t("{count} conversations running", { count: group.runningCount })} />
+        <Spinner
+          className="size-3 shrink-0"
+          aria-label={t("{count} conversations running", { count: group.runningCount })}
+        />
       )}
       <span className="shrink-0 tabular-nums opacity-60">{group.conversations.length}</span>
     </button>
@@ -1077,15 +1098,18 @@ export default function ChatPage() {
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
   const [sourceRequested, setSourceRequested] = React.useState(false);
   const [convsLoaded, setConvsLoaded] = React.useState(false);
-  const selectConversation = React.useCallback((id: number | null) => {
-    if (id !== selectedId) {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("approval");
-      setSourceRequested(false);
-      window.history.replaceState(null, "", url);
-    }
-    setSelectedId(id);
-  }, [selectedId]);
+  const selectConversation = React.useCallback(
+    (id: number | null) => {
+      if (id !== selectedId) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("approval");
+        setSourceRequested(false);
+        window.history.replaceState(null, "", url);
+      }
+      setSelectedId(id);
+    },
+    [selectedId],
+  );
 
   const [renamingId, setRenamingId] = React.useState<number | null>(null);
   const [renameText, setRenameText] = React.useState("");
@@ -1112,7 +1136,10 @@ export default function ChatPage() {
     const seq = ++conversationListSeq.current;
     try {
       const items = await api.conversations(engagementId);
-      if (seq === conversationListSeq.current) { setConvs(items); setConvsLoaded(true); }
+      if (seq === conversationListSeq.current) {
+        setConvs(items);
+        setConvsLoaded(true);
+      }
     } catch {
       // Preserve the selected transcript and list on a transient poll failure.
     }
@@ -1241,7 +1268,9 @@ export default function ChatPage() {
       .sort((a, b) => a.name.localeCompare(b.name, intlLocale));
   }, [convs, chatAgents, agentByKey, agentFilter]);
   const conversationCountLabel =
-    agentFilter === null ? t("{count} total", { count: convs.length }) : `${filteredConversations.length} / ${convs.length}`;
+    agentFilter === null
+      ? t("{count} total", { count: convs.length })
+      : `${filteredConversations.length} / ${convs.length}`;
 
   function changeAgentFilter(key: string | null) {
     setAgentFilter(key);
@@ -1584,7 +1613,9 @@ export default function ChatPage() {
               {t("Delete {count} selected conversations?", { count: selectedConversationCount })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {t("Conversation messages and execution records will be deleted with them. This action cannot be undone.")}
+              {t(
+                "Conversation messages and execution records will be deleted with them. This action cannot be undone.",
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -33,13 +33,13 @@ import {
   PinOffIcon,
   PlayIcon,
   PlusIcon,
-  TrashIcon,
   SaveIcon,
   SearchIcon,
   SlidersHorizontalIcon,
   StarIcon,
   TagsIcon,
   Trash2Icon,
+  TrashIcon,
   Undo2Icon,
   XIcon,
 } from "lucide-react";
@@ -119,15 +119,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { intlLocale, t } from "@/i18n";
-import { setVisibleInterval } from "@/lib/polling";
-import { api } from "@/lib/api";
 import { useEngagementSelection, useEngagements } from "@/hooks/use-engagement";
+import { intlLocale, t } from "@/i18n";
+import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
+import { setVisibleInterval } from "@/lib/polling";
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
 import type {
   AssetInterceptRuleInput,
-  TaskCredentialInput,
   ChatAttachment,
   Company,
   DeleteTaskOptions,
@@ -137,6 +136,7 @@ import type {
   TaskArchive,
   TaskArchiveState,
   TaskCategory,
+  TaskCredentialInput,
   TaskStatus,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -215,7 +215,8 @@ function deleteDetails(result: DeleteCounts): string[] {
   if (result.traffic_deleted > 0) details.push(t("Deleted {count} traffic records", { count: result.traffic_deleted }));
   if (result.files_deleted) details.push(t("Deleted task files"));
   if (result.findings_deleted > 0) details.push(t("Deleted {count} findings", { count: result.findings_deleted }));
-  if (result.llm_records_deleted > 0) details.push(t("Deleted {count} LLM request/response records", { count: result.llm_records_deleted }));
+  if (result.llm_records_deleted > 0)
+    details.push(t("Deleted {count} LLM request/response records", { count: result.llm_records_deleted }));
   return details;
 }
 
@@ -687,7 +688,12 @@ export default function TasksPage() {
             ? t("Deleted {count} tasks ({details})", { count: deleted.length, details: details.join(", ") })
             : t("Deleted {count} tasks", { count: deleted.length });
         if (warnings.length > 0) {
-          toast.warning(t("{summary}; some external data cleanup did not finish: {warning}", { summary, warning: warnings.join("; ") }));
+          toast.warning(
+            t("{summary}; some external data cleanup did not finish: {warning}", {
+              summary,
+              warning: warnings.join("; "),
+            }),
+          );
         } else {
           toast.success(summary);
         }
@@ -808,7 +814,7 @@ export default function TasksPage() {
         const failed = result.items.filter((item) => !item.ok);
         const target = result.category?.name ?? t("Uncategorized");
         if (succeeded.length > 0) {
-          toast.success(t("Moved {count} tasks to \"{target}\"", { count: succeeded.length, target }));
+          toast.success(t('Moved {count} tasks to "{target}"', { count: succeeded.length, target }));
           setSelectedIds(new Set());
         }
         if (failed.length > 0) {
@@ -969,7 +975,7 @@ export default function TasksPage() {
 
             {tasks.length === 0 ? (
               <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
-                {t("No tasks yet. Click \"New task\" at the top right to start.")}
+                {t('No tasks yet. Click "New task" at the top right to start.')}
               </div>
             ) : filtered.length === 0 ? (
               <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
@@ -1294,9 +1300,7 @@ const TaskRow = React.memo(function TaskRow({
           const f = task.findings;
           const total = f ? f.critical + f.high + f.medium + f.low : 0;
           if (!f || total === 0) return <span className="text-muted-foreground">0</span>;
-          const seg = (n: number, cls: string) => (
-            <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>
-          );
+          const seg = (n: number, cls: string) => <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>;
           return (
             <span className="font-medium whitespace-nowrap" title={t("Critical / High / Medium / Low")}>
               {seg(f.critical, "text-rose-600 dark:text-rose-400")}
@@ -1349,8 +1353,7 @@ const TaskRow = React.memo(function TaskRow({
             {" · "}
             {t("Cache")} <span className="text-foreground">{fmtTokens(task.tokens.cache_read_tokens)}</span>
             {" · "}
-            {t("Out")}{" "}
-            <span className="text-foreground">{fmtTokens(task.tokens.output_tokens)}</span>
+            {t("Out")} <span className="text-foreground">{fmtTokens(task.tokens.output_tokens)}</span>
           </span>
         ) : (
           "—"
@@ -1358,7 +1361,13 @@ const TaskRow = React.memo(function TaskRow({
       </TableCell>
       <TableCell className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))] group-hover:bg-muted/50">
         <div className="flex items-center justify-end gap-0.5">
-          <Button size="icon" variant="ghost" asChild aria-label={t("View task details")} title={t("View task details")}>
+          <Button
+            size="icon"
+            variant="ghost"
+            asChild
+            aria-label={t("View task details")}
+            title={t("View task details")}
+          >
             <Link href={`/function/tasks/detail?id=${encodeURIComponent(task.id)}`}>
               <EyeIcon />
             </Link>
@@ -1570,7 +1579,7 @@ function ArchiveConfirmDialog({
           <AlertDialogTitle>{count === 1 ? t("Archive task") : t("Archive {count} tasks", { count })}</AlertDialogTitle>
           <AlertDialogDescription className="[overflow-wrap:anywhere]">
             {t(
-              "Archiving stops task scheduling and compresses the graph, LLM history, files, and exclusive assets and traffic into local cold storage. Once archived, a task can be restored from \"Archived\".",
+              'Archiving stops task scheduling and compresses the graph, LLM history, files, and exclusive assets and traffic into local cold storage. Once archived, a task can be restored from "Archived".',
             )}
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -1601,7 +1610,12 @@ function ArchiveConfirmDialog({
 function TaskArchiveAction({ task, onArchive }: { task: Task; onArchive: (task: Task) => Promise<void> }) {
   const reason = archiveBlockReason(task);
   const trigger = (
-    <Button size="icon" variant="ghost" disabled={Boolean(reason)} aria-label={t("Archive task #{id}", { id: task.id })}>
+    <Button
+      size="icon"
+      variant="ghost"
+      disabled={Boolean(reason)}
+      aria-label={t("Archive task #{id}", { id: task.id })}
+    >
       <ArchiveIcon />
     </Button>
   );
@@ -1664,7 +1678,10 @@ function formatArchiveBytes(bytes: number): string {
 function archiveCompressionLabel(archive: TaskArchive): string {
   if (archive.original_size <= 0 || archive.compressed_size <= 0) return "—";
   const saved = Math.max(0, 100 - (archive.compressed_size / archive.original_size) * 100);
-  return t("{size} · saves {percent}%", { size: formatArchiveBytes(archive.compressed_size), percent: saved.toFixed(0) });
+  return t("{size} · saves {percent}%", {
+    size: formatArchiveBytes(archive.compressed_size),
+    percent: saved.toFixed(0),
+  });
 }
 
 function archiveDataTotal(archive: TaskArchive): number {
@@ -1696,7 +1713,9 @@ function ArchiveDeleteDialog({
       <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>{t("Permanently delete {count} task archives?", { count: archives.length })}</AlertDialogTitle>
+          <AlertDialogTitle>
+            {t("Permanently delete {count} task archives?", { count: archives.length })}
+          </AlertDialogTitle>
           <AlertDialogDescription className="[overflow-wrap:anywhere]">
             {t(
               "About {size} of archive packages and {rows} related data snapshots will be permanently deleted. This action cannot be undone.",
@@ -1944,7 +1963,9 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
           <Empty className="mx-4 border border-dashed lg:mx-6">
             <EmptyHeader>
               <EmptyTitle>{t("No task archives")}</EmptyTitle>
-              <EmptyDescription>{t("Paused or terminal tasks can be archived from the current task list.")}</EmptyDescription>
+              <EmptyDescription>
+                {t("Paused or terminal tasks can be archived from the current task list.")}
+              </EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (
@@ -2005,7 +2026,9 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
                     <TableCell>
                       <StatusBadge domain="task" value={archive.original_status} dot />
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{archive.category_name || t("Uncategorized")}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {archive.category_name || t("Uncategorized")}
+                    </TableCell>
                     <TableCell className="text-muted-foreground whitespace-nowrap text-xs">
                       {archiveDate(archive.archived_at || archive.requested_at)}
                     </TableCell>
@@ -2015,7 +2038,9 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
                     >
                       {archiveCompressionLabel(archive)}
                     </TableCell>
-                    <TableCell className="text-xs tabular-nums">{archiveDataTotal(archive).toLocaleString(intlLocale)}</TableCell>
+                    <TableCell className="text-xs tabular-nums">
+                      {archiveDataTotal(archive).toLocaleString(intlLocale)}
+                    </TableCell>
                     <TableCell>
                       <div className="flex min-w-0 flex-col gap-1.5">
                         <ArchiveStateBadge state={archive.state} />
@@ -2065,7 +2090,12 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
                             archives={[archive]}
                             onConfirm={() => deleteMany([archive])}
                             trigger={
-                              <Button size="icon" variant="ghost" aria-label={t("Permanently delete archive")} title={t("Permanently delete")}>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                aria-label={t("Permanently delete archive")}
+                                title={t("Permanently delete")}
+                              >
                                 <Trash2Icon />
                               </Button>
                             }
@@ -2158,7 +2188,11 @@ function DeleteOptionFields({
           />
           <FieldContent>
             <FieldLabel htmlFor={`delete-all-${idPrefix}`}>{t("Delete all")}</FieldLabel>
-            <FieldDescription>{t("Check every related data type below, including assets, traffic, files, findings, and LLM request/response records.")}</FieldDescription>
+            <FieldDescription>
+              {t(
+                "Check every related data type below, including assets, traffic, files, findings, and LLM request/response records.",
+              )}
+            </FieldDescription>
           </FieldContent>
         </Field>
         <Field orientation="horizontal">
@@ -2169,7 +2203,9 @@ function DeleteOptionFields({
           />
           <FieldContent>
             <FieldLabel htmlFor={`delete-assets-${idPrefix}`}>{t("Related assets")}</FieldLabel>
-            <FieldDescription>{t("Delete assets that belong only to this task; shared assets are only detached from the current task.")}</FieldDescription>
+            <FieldDescription>
+              {t("Delete assets that belong only to this task; shared assets are only detached from the current task.")}
+            </FieldDescription>
           </FieldContent>
         </Field>
         <Field orientation="horizontal">
@@ -2180,7 +2216,11 @@ function DeleteOptionFields({
           />
           <FieldContent>
             <FieldLabel htmlFor={`delete-traffic-${idPrefix}`}>{t("Related traffic")}</FieldLabel>
-            <FieldDescription>{t("Deleted by the related assets' exact hostnames; traffic of shared hosts still referenced by other tasks is kept.")}</FieldDescription>
+            <FieldDescription>
+              {t(
+                "Deleted by the related assets' exact hostnames; traffic of shared hosts still referenced by other tasks is kept.",
+              )}
+            </FieldDescription>
           </FieldContent>
         </Field>
         <Field orientation="horizontal">
@@ -2191,7 +2231,9 @@ function DeleteOptionFields({
           />
           <FieldContent>
             <FieldLabel htmlFor={`delete-files-${idPrefix}`}>{t("Task files")}</FieldLabel>
-            <FieldDescription>{t("Delete uploaded files, command output, and other artifacts in the task's working directory.")}</FieldDescription>
+            <FieldDescription>
+              {t("Delete uploaded files, command output, and other artifacts in the task's working directory.")}
+            </FieldDescription>
           </FieldContent>
         </Field>
         <Field orientation="horizontal">
@@ -2202,7 +2244,9 @@ function DeleteOptionFields({
           />
           <FieldContent>
             <FieldLabel htmlFor={`delete-findings-${idPrefix}`}>{t("Related findings")}</FieldLabel>
-            <FieldDescription>{t("Permanently delete the standalone finding records and finding reports produced by this task.")}</FieldDescription>
+            <FieldDescription>
+              {t("Permanently delete the standalone finding records and finding reports produced by this task.")}
+            </FieldDescription>
           </FieldContent>
         </Field>
         <Field orientation="horizontal">
@@ -2213,7 +2257,9 @@ function DeleteOptionFields({
           />
           <FieldContent>
             <FieldLabel htmlFor={`delete-llm-records-${idPrefix}`}>{t("LLM request/response records")}</FieldLabel>
-            <FieldDescription>{t("Permanently delete the LLM requests, responses, tokens, and error details recorded for this task.")}</FieldDescription>
+            <FieldDescription>
+              {t("Permanently delete the LLM requests, responses, tokens, and error details recorded for this task.")}
+            </FieldDescription>
           </FieldContent>
         </Field>
       </FieldGroup>
@@ -2260,9 +2306,12 @@ function DeleteTaskDialog({
           <AlertDialogTitle>{t("Delete task #{id}?", { id: task.id })}</AlertDialogTitle>
           <AlertDialogDescription className="[overflow-wrap:anywhere]">
             {task.description
-              ? t("“{description}” will be permanently deleted together with its execution records and exploration graph.", {
-                  description: task.description.length > 80 ? `${task.description.slice(0, 80)}…` : task.description,
-                })
+              ? t(
+                  "“{description}” will be permanently deleted together with its execution records and exploration graph.",
+                  {
+                    description: task.description.length > 80 ? `${task.description.slice(0, 80)}…` : task.description,
+                  },
+                )
               : t("This task will be permanently deleted together with its execution records and exploration graph.")}
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -2324,7 +2373,7 @@ function MoveTasksCategoryDialog({
           <DialogTitle>{t("Change the category of {count} selected tasks", { count })}</DialogTitle>
           <DialogDescription>
             {t(
-              "The target category applies to all selected tasks; choosing \"Uncategorized\" moves them out of their current category.",
+              'The target category applies to all selected tasks; choosing "Uncategorized" moves them out of their current category.',
             )}
           </DialogDescription>
         </DialogHeader>
@@ -2345,7 +2394,9 @@ function MoveTasksCategoryDialog({
               </SelectGroup>
             </SelectContent>
           </Select>
-          {categories.length === 0 && <FieldDescription>{t("No categories yet; create one in \"Category management\" first.")}</FieldDescription>}
+          {categories.length === 0 && (
+            <FieldDescription>{t('No categories yet; create one in "Category management" first.')}</FieldDescription>
+          )}
         </Field>
         <DialogFooter>
           <DialogClose asChild>
@@ -2488,7 +2539,11 @@ function SourceTaskPicker({
         </ComboboxValue>
         <ComboboxChipsInput
           id="source-tasks"
-          placeholder={atLimit ? t("Link up to {count} tasks", { count: MAX_SOURCE_TASKS }) : t("Search task ID, description, or goal")}
+          placeholder={
+            atLimit
+              ? t("Link up to {count} tasks", { count: MAX_SOURCE_TASKS })
+              : t("Search task ID, description, or goal")
+          }
           disabled={atLimit}
         />
       </ComboboxChips>
@@ -2573,7 +2628,7 @@ function CategoryPicker({
       onValueChange(created.id);
       setInputValue("");
       onCategoryCreated();
-      toast.success(t("Category \"{name}\" created", { name: created.name }));
+      toast.success(t('Category "{name}" created', { name: created.name }));
     } catch (e) {
       toast.error(t("Failed to create category: {error}", { error: (e as Error).message }));
     } finally {
@@ -2631,10 +2686,12 @@ function CategoryPicker({
               className="flex w-full items-center gap-2 px-2 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
             >
               {creating ? <Spinner className="size-4" /> : <PlusIcon className="size-4" />}
-              {t("Create category \"{name}\"", { name: trimmed })}
+              {t('Create category "{name}"', { name: trimmed })}
             </button>
           ) : (
-            <div className="px-2 py-2 text-sm text-muted-foreground">{t("Type a name to search or create a category")}</div>
+            <div className="px-2 py-2 text-sm text-muted-foreground">
+              {t("Type a name to search or create a category")}
+            </div>
           ))}
       </ComboboxContent>
     </Combobox>
@@ -2692,7 +2749,9 @@ function CompanyPicker({
       <ComboboxChips>
         <ComboboxValue>
           {selectedIDs.map((companyID) => (
-            <ComboboxChip key={companyID}>{companiesByID.get(companyID)?.name ?? t("Company #{id}", { id: companyID })}</ComboboxChip>
+            <ComboboxChip key={companyID}>
+              {companiesByID.get(companyID)?.name ?? t("Company #{id}", { id: companyID })}
+            </ComboboxChip>
           ))}
         </ComboboxValue>
         <ComboboxChipsInput id="task-companies" placeholder={t("Search company name or asset scope")} />
@@ -2706,7 +2765,9 @@ function CompanyPicker({
               <ComboboxItem key={companyID} value={companyID}>
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <div className="flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate font-medium">{company?.name ?? t("Company #{id}", { id: companyID })}</span>
+                    <span className="min-w-0 flex-1 truncate font-medium">
+                      {company?.name ?? t("Company #{id}", { id: companyID })}
+                    </span>
                     <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
                       {t("{count} assets", { count: company?.asset_count ?? 0 })}
                     </span>
@@ -2757,7 +2818,9 @@ function CategoryDropTarget({
       onClick={onSelect}
     >
       <span className="block truncate font-medium text-sm">{name}</span>
-      <span className="block truncate text-muted-foreground text-xs">{isOver ? t("Release to move") : t("{count} tasks", { count })}</span>
+      <span className="block truncate text-muted-foreground text-xs">
+        {isOver ? t("Release to move") : t("{count} tasks", { count })}
+      </span>
     </button>
   );
 }
@@ -2955,7 +3018,9 @@ function CategoryManagementSheet({
     try {
       await api.updateTaskCategory(task.id, category?.id);
       onTaskMoved(task.id, category);
-      toast.success(t("Task #{id} moved to \"{category}\"", { id: task.id, category: category?.name ?? t("Uncategorized") }));
+      toast.success(
+        t('Task #{id} moved to "{category}"', { id: task.id, category: category?.name ?? t("Uncategorized") }),
+      );
     } catch (error) {
       toast.error(t("Failed to move task: {error}", { error: (error as Error).message }));
     } finally {
@@ -3053,9 +3118,12 @@ function CategoryManagementSheet({
                       />
                       <FieldDescription>
                         {selectedCategory
-                          ? t("{count} tasks currently use this category. Renaming updates the task list accordingly.", {
-                              count: selectedCategory.task_count,
-                            })
+                          ? t(
+                              "{count} tasks currently use this category. Renaming updates the task list accordingly.",
+                              {
+                                count: selectedCategory.task_count,
+                              },
+                            )
                           : t("Once created, it is usable in the create-task form and task list filters.")}
                       </FieldDescription>
                     </Field>
@@ -3075,7 +3143,9 @@ function CategoryManagementSheet({
                       {visibleTasks.length === 0 ? (
                         <Empty className="min-h-36 border">
                           <EmptyHeader>
-                            <EmptyTitle>{selectedCategory ? t("No tasks in this category") : t("No uncategorized tasks")}</EmptyTitle>
+                            <EmptyTitle>
+                              {selectedCategory ? t("No tasks in this category") : t("No uncategorized tasks")}
+                            </EmptyTitle>
                             <EmptyDescription>{t("Content appears here once tasks are assigned.")}</EmptyDescription>
                           </EmptyHeader>
                         </Empty>
@@ -3131,11 +3201,11 @@ function CategoryManagementSheet({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {t("Delete category \"{name}\"?", { name: selectedCategory?.name || t("Unnamed category") })}
+              {t('Delete category "{name}"?', { name: selectedCategory?.name || t("Unnamed category") })}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {t(
-                "After the category is deleted, its {count} tasks move to \"Uncategorized\" automatically; task data is not deleted.",
+                'After the category is deleted, its {count} tasks move to "Uncategorized" automatically; task data is not deleted.',
                 { count: selectedCategory?.task_count ?? 0 },
               )}
             </AlertDialogDescription>
@@ -3271,7 +3341,12 @@ function CreateTaskSheet({
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
         credentials: credentials
-          .map((c) => ({ domain: c.domain.trim(), username: c.username.trim(), password: c.password, note: c.note?.trim() ?? "" }))
+          .map((c) => ({
+            domain: c.domain.trim(),
+            username: c.username.trim(),
+            password: c.password,
+            note: c.note?.trim() ?? "",
+          }))
           .filter((c) => c.domain !== "" && c.username !== ""),
       });
       toast.success(t("Task created"));
@@ -3317,7 +3392,9 @@ function CreateTaskSheet({
       >
         <SheetHeader className="border-b p-6">
           <SheetTitle>{t("New task")}</SheetTitle>
-          <SheetDescription>{t("Fill in the test target and goal; advanced parameters can be expanded as needed.")}</SheetDescription>
+          <SheetDescription>
+            {t("Fill in the test target and goal; advanced parameters can be expanded as needed.")}
+          </SheetDescription>
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto p-6">
@@ -3356,7 +3433,11 @@ function CreateTaskSheet({
                 onCategoryCreated={onCategoriesChanged}
                 portalContainer={sheetContentRef}
               />
-              <FieldDescription>{t("Optional, single category; used for task list filtering and archiving, never affecting agent execution.")}</FieldDescription>
+              <FieldDescription>
+                {t(
+                  "Optional, single category; used for task list filtering and archiving, never affecting agent execution.",
+                )}
+              </FieldDescription>
             </Field>
             <Field>
               <FieldLabel htmlFor="task-engagement">{t("Engagement")}</FieldLabel>
@@ -3378,7 +3459,9 @@ function CreateTaskSheet({
                   </SelectGroup>
                 </SelectContent>
               </Select>
-              <FieldDescription>{t("Optional; groups tasks under an engagement for cross-page filtering.")}</FieldDescription>
+              <FieldDescription>
+                {t("Optional; groups tasks under an engagement for cross-page filtering.")}
+              </FieldDescription>
             </Field>
             <div className="grid gap-2">
               <Label htmlFor="description">{t("Description")}</Label>
@@ -3410,10 +3493,15 @@ function CreateTaskSheet({
                 </Button>
                 <span className="text-muted-foreground text-xs">
                   {uploadCount > 0
-                    ? t("{count} files uploaded; their absolute paths were appended to the end of the description (editable)", {
-                        count: uploadCount,
-                      })
-                    : t("Multi-select; after upload, absolute file paths are appended to the description for the worker to open with Read/Bash")}
+                    ? t(
+                        "{count} files uploaded; their absolute paths were appended to the end of the description (editable)",
+                        {
+                          count: uploadCount,
+                        },
+                      )
+                    : t(
+                        "Multi-select; after upload, absolute file paths are appended to the description for the worker to open with Read/Bash",
+                      )}
                 </span>
               </div>
             </div>
@@ -3452,16 +3540,18 @@ function CreateTaskSheet({
               />
               <FieldDescription>
                 {t(
-                  "On task creation, the selected companies' current assets are added to \"Test assets\", and their domains, IPs, CIDRs, ICPs, and company keywords are provided to the agent as scope context; no intents are generated automatically and execution goals are not forced to change.",
+                  'On task creation, the selected companies\' current assets are added to "Test assets", and their domains, IPs, CIDRs, ICPs, and company keywords are provided to the agent as scope context; no intents are generated automatically and execution goals are not forced to change.',
                 )}
               </FieldDescription>
             </Field>
             <Field>
-              <FieldLabel htmlFor="task-intercept-rules">{t("Task-level asset intercept / allow rules (optional)")}</FieldLabel>
+              <FieldLabel htmlFor="task-intercept-rules">
+                {t("Task-level asset intercept / allow rules (optional)")}
+              </FieldLabel>
               <AssetInterceptRulesEditor value={interceptRules} onChange={setInterceptRules} />
               <FieldDescription>
                 {t(
-                  "Applies to this task only and is not written to global rules. Evaluation order: \"Block\" rules (including global ones) match first, and a hit forbids testing; with no hit and \"Allow\" rules configured for this task, an asset must match an allow rule to be permitted, otherwise testing is likewise forbidden; with no allow rules configured, no whitelist is active.",
+                  'Applies to this task only and is not written to global rules. Evaluation order: "Block" rules (including global ones) match first, and a hit forbids testing; with no hit and "Allow" rules configured for this task, an asset must match an allow rule to be permitted, otherwise testing is likewise forbidden; with no allow rules configured, no whitelist is active.',
                 )}
               </FieldDescription>
             </Field>
@@ -3477,7 +3567,9 @@ function CreateTaskSheet({
                 portalContainer={sheetContentRef}
               />
               <FieldDescription>
-                {t("Reorder profiles to choose worker rotation order or failover priority. Saving the chain resets exhausted profiles.")}
+                {t(
+                  "Reorder profiles to choose worker rotation order or failover priority. Saving the chain resets exhausted profiles.",
+                )}
               </FieldDescription>
             </Field>
             <Field>
@@ -3488,17 +3580,23 @@ function CreateTaskSheet({
                     <Input
                       placeholder={t("domain (e.g. target.example.com)")}
                       value={c.domain}
-                      onChange={(e) => setCredentials((prev) => prev.map((x, j) => (j === i ? { ...x, domain: e.target.value } : x)))}
+                      onChange={(e) =>
+                        setCredentials((prev) => prev.map((x, j) => (j === i ? { ...x, domain: e.target.value } : x)))
+                      }
                     />
                     <Input
                       placeholder={t("email or username")}
                       value={c.username}
-                      onChange={(e) => setCredentials((prev) => prev.map((x, j) => (j === i ? { ...x, username: e.target.value } : x)))}
+                      onChange={(e) =>
+                        setCredentials((prev) => prev.map((x, j) => (j === i ? { ...x, username: e.target.value } : x)))
+                      }
                     />
                     <Input
                       placeholder={t("password (empty = agent generates)")}
                       value={c.password}
-                      onChange={(e) => setCredentials((prev) => prev.map((x, j) => (j === i ? { ...x, password: e.target.value } : x)))}
+                      onChange={(e) =>
+                        setCredentials((prev) => prev.map((x, j) => (j === i ? { ...x, password: e.target.value } : x)))
+                      }
                     />
                     <Button
                       type="button"
@@ -3513,7 +3611,9 @@ function CreateTaskSheet({
                       className="sm:col-span-4"
                       placeholder={t("note (optional, e.g. program alias account)")}
                       value={c.note ?? ""}
-                      onChange={(e) => setCredentials((prev) => prev.map((x, j) => (j === i ? { ...x, note: e.target.value } : x)))}
+                      onChange={(e) =>
+                        setCredentials((prev) => prev.map((x, j) => (j === i ? { ...x, note: e.target.value } : x)))
+                      }
                     />
                   </div>
                 ))}
@@ -3522,7 +3622,9 @@ function CreateTaskSheet({
                   size="sm"
                   variant="outline"
                   className="w-fit"
-                  onClick={() => setCredentials((prev) => [...prev, { domain: "", username: "", password: "", note: "" }])}
+                  onClick={() =>
+                    setCredentials((prev) => [...prev, { domain: "", username: "", password: "", note: "" }])
+                  }
                 >
                   <PlusIcon className="size-4" /> {t("Add account")}
                 </Button>
@@ -3539,7 +3641,9 @@ function CreateTaskSheet({
               <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 text-sm font-medium">
                 <ChevronRightIcon className="text-muted-foreground size-4 transition-transform group-data-[state=open]:rotate-90" />
                 {t("Advanced settings")}
-                <span className="text-muted-foreground ml-auto text-xs font-normal">{t("Timeout · Heartbeat · First intent")}</span>
+                <span className="text-muted-foreground ml-auto text-xs font-normal">
+                  {t("Timeout · Heartbeat · First intent")}
+                </span>
               </CollapsibleTrigger>
               <CollapsibleContent className="grid gap-5 pt-5">
                 <div className="grid gap-2">
@@ -3587,7 +3691,7 @@ function CreateTaskSheet({
                   </label>
                   <p className="text-muted-foreground text-xs">
                     {t(
-                      "When enabled, the \"description + goal\" is dispatched as one intent right at creation; the worker starts without waiting for the first planning round and the planner takes over afterwards to judge/follow up. Recommended for settings like CTF where one run usually solves it directly; disabled follows the standard plan-then-execute flow.",
+                      'When enabled, the "description + goal" is dispatched as one intent right at creation; the worker starts without waiting for the first planning round and the planner takes over afterwards to judge/follow up. Recommended for settings like CTF where one run usually solves it directly; disabled follows the standard plan-then-execute flow.',
                     )}
                   </p>
                 </div>
@@ -3602,7 +3706,7 @@ function CreateTaskSheet({
                   </label>
                   <p className="text-muted-foreground text-xs">
                     {t(
-                      "On by default: computes and displays test coverage, shows testing progress on the situational graph, and automatically accumulates the test scope. When off, coverage is no longer computed or displayed, the situational graph shows assets without progress, and agents no longer receive scope-related tools. Disabling does not affect \"Linked company asset scope\".",
+                      'On by default: computes and displays test coverage, shows testing progress on the situational graph, and automatically accumulates the test scope. When off, coverage is no longer computed or displayed, the situational graph shows assets without progress, and agents no longer receive scope-related tools. Disabling does not affect "Linked company asset scope".',
                     )}
                   </p>
                 </div>

@@ -11,7 +11,6 @@ import { toast } from "sonner";
 import { StatusBadge } from "@/components/status-badge";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,6 +22,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -32,15 +32,16 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { t } from "@/i18n";
 import { useEngagements } from "@/hooks/use-engagement";
+import { t } from "@/i18n";
 import { api } from "@/lib/api";
+import { setVisibleInterval } from "@/lib/polling";
 import type { LLMProfile, Task } from "@/lib/types";
 
 import { AssetsTab } from "./_tabs/assets-tab";
@@ -54,7 +55,6 @@ import { OverviewTab } from "./_tabs/overview-tab";
 import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
-import { setVisibleInterval } from "@/lib/polling";
 
 const TABS = [
   { value: "sessions", label: t("Sessions") },
@@ -106,7 +106,11 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
       : (activeProfile?.name ?? (activeID ? t("Config #{id}", { id: activeID }) : t("Follow default config")));
   const activeIndex = chain.indexOf(activeID);
   const backupCount = activeIndex >= 0 ? Math.max(0, chain.length - activeIndex - 1) : 0;
-  const currentTitle = [currentLabel, activeProfile?.model, backupCount > 0 ? t("{count} backups", { count: backupCount }) : ""]
+  const currentTitle = [
+    currentLabel,
+    activeProfile?.model,
+    backupCount > 0 ? t("{count} backups", { count: backupCount }) : "",
+  ]
     .filter(Boolean)
     .join(" · ");
   let editorDescription = t(
@@ -172,7 +176,9 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
         >
           <BrainIcon data-icon="inline-start" />
           <span className="hidden max-w-36 truncate lg:inline">{currentLabel}</span>
-          {!task.llm_rotate && backupCount > 0 && <span className="hidden text-muted-foreground xl:inline">+{backupCount}</span>}
+          {!task.llm_rotate && backupCount > 0 && (
+            <span className="hidden text-muted-foreground xl:inline">+{backupCount}</span>
+          )}
         </Button>
       </PopoverTrigger>
       <PopoverContent ref={popoverContentRef} align="start" className="w-[min(28rem,calc(100vw-2rem))] gap-4 p-4">
@@ -390,7 +396,9 @@ function TaskDetailInner() {
   if (!task) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
-        <p className="text-muted-foreground">{loaded ? t("Task {id} was deleted, archived, or does not exist", { id }) : t("Loading…")}</p>
+        <p className="text-muted-foreground">
+          {loaded ? t("Task {id} was deleted, archived, or does not exist", { id }) : t("Loading…")}
+        </p>
         {loaded && (
           <Button asChild variant="outline">
             <Link href="/function/tasks">
@@ -406,7 +414,9 @@ function TaskDetailInner() {
   const terminal = ["done", "failed", "timeout"].includes(task.status);
   const archiveLifecycleEligible = terminal || paused || task.status === "paused";
   const canArchive = archiveLifecycleEligible && !task.archive_blocked_by_task_id;
-  let archiveDisabledReason = task.queued ? t("Queued tasks must be paused first") : t("Running tasks must be paused first");
+  let archiveDisabledReason = task.queued
+    ? t("Queued tasks must be paused first")
+    : t("Running tasks must be paused first");
   if (archiveLifecycleEligible && task.archive_blocked_by_task_id) {
     archiveDisabledReason = t(
       "The task is directly inherited by unarchived task #{id}; archive the dependent task first",
@@ -466,7 +476,7 @@ function TaskDetailInner() {
                   <AlertDialogTitle>{t("Archive task #{id}?", { id: task.id })}</AlertDialogTitle>
                   <AlertDialogDescription>
                     {t(
-                      "The task graph, related records, exclusive assets and traffic, working files, and LLM history will be compressed into cold storage. Once archiving completes, restore it from the \"Archived\" tab of the task list.",
+                      'The task graph, related records, exclusive assets and traffic, working files, and LLM history will be compressed into cold storage. Once archiving completes, restore it from the "Archived" tab of the task list.',
                     )}
                   </AlertDialogDescription>
                 </AlertDialogHeader>

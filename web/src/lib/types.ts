@@ -1482,7 +1482,6 @@ export type TaskCredential = TaskCredentialInput & {
   updated_at: string;
 };
 
-
 export interface AssetInterceptRule {
   id: number;
   enabled: boolean;

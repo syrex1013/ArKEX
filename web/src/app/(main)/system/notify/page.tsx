@@ -304,7 +304,9 @@ export default function NotifyPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t("Notifications")}</h1>
           <p className="text-muted-foreground text-sm">
-            {t("Push findings to DingTalk / Feishu / WeCom and other channels · each channel has its own delivery timing and filter rules")}
+            {t(
+              "Push findings to DingTalk / Feishu / WeCom and other channels · each channel has its own delivery timing and filter rules",
+            )}
           </p>
         </div>
         {meta && (
@@ -324,10 +326,18 @@ export default function NotifyPage() {
 
       {meta && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          <StatTile label={t("Channels")} value={`${meta.stats.channels_on} / ${meta.stats.channels}`} hint={t("On / total")} />
+          <StatTile
+            label={t("Channels")}
+            value={`${meta.stats.channels_on} / ${meta.stats.channels}`}
+            hint={t("On / total")}
+          />
           <StatTile label={t("Sent today")} value={String(meta.stats.sent_today)} />
           <StatTile label={t("Pending")} value={String(meta.stats.pending)} />
-          <StatTile label={t("Failed")} value={String(meta.stats.failed)} tone={meta.stats.failed > 0 ? "red" : undefined} />
+          <StatTile
+            label={t("Failed")}
+            value={String(meta.stats.failed)}
+            tone={meta.stats.failed > 0 ? "red" : undefined}
+          />
           <StatTile
             label={t("Oldest backlog")}
             value={formatBacklog(meta.stats.backlog_age_ms)}
@@ -351,7 +361,9 @@ export default function NotifyPage() {
               value={baseURL}
               onChange={(e) => setBaseURL(e.target.value)}
             />
-            <p className="text-muted-foreground text-xs">{t("The address the \"View details\" button in messages points to. Leave empty to omit the button.")}</p>
+            <p className="text-muted-foreground text-xs">
+              {t('The address the "View details" button in messages points to. Leave empty to omit the button.')}
+            </p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor="n-digest">{t("Digest interval (minutes)")}</Label>
@@ -364,7 +376,7 @@ export default function NotifyPage() {
               value={digestMin}
               onChange={(e) => setDigestMin(e.target.value)}
             />
-            <p className="text-muted-foreground text-xs">{t("Only applies to channels in \"digest\" mode.")}</p>
+            <p className="text-muted-foreground text-xs">{t('Only applies to channels in "digest" mode.')}</p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor="n-summary-max">{t("Summary length (characters)")}</Label>
@@ -397,7 +409,9 @@ export default function NotifyPage() {
               aria-invalid={limitInvalid(assetsMax, ASSETS_LIMIT_MAX)}
             />
             <p className="text-muted-foreground text-xs">
-              {t("Most asset names listed for a finding, 0–{max}. 0 = no truncation (all assets listed).", { max: ASSETS_LIMIT_MAX })}
+              {t("Most asset names listed for a finding, 0–{max}. 0 = no truncation (all assets listed).", {
+                max: ASSETS_LIMIT_MAX,
+              })}
             </p>
           </div>
           <div className="sm:col-span-2">
@@ -516,7 +530,9 @@ export default function NotifyPage() {
                 </Select>
                 {editing && (
                   <p className="text-muted-foreground text-xs">
-                    {t("The channel type cannot be changed — a different type means a different set of credentials; create a new channel instead.")}
+                    {t(
+                      "The channel type cannot be changed — a different type means a different set of credentials; create a new channel instead.",
+                    )}
                   </p>
                 )}
               </div>
@@ -533,7 +549,9 @@ export default function NotifyPage() {
 
               {fields.length === 0 ? (
                 <p className="text-muted-foreground text-sm">
-                  {t("The form for this channel type is not defined yet (the frontend is missing a CHANNEL_FIELDS entry); add it and retry.")}
+                  {t(
+                    "The form for this channel type is not defined yet (the frontend is missing a CHANNEL_FIELDS entry); add it and retry.",
+                  )}
                 </p>
               ) : (
                 fields.map((d) => (
@@ -559,7 +577,9 @@ export default function NotifyPage() {
                   </SelectContent>
                 </Select>
                 <p className="text-muted-foreground text-xs">
-                  {t("For \"realtime for High, digest for the rest\", create two channels: one realtime with a High threshold, one digest with no severity limit.")}
+                  {t(
+                    'For "realtime for High, digest for the rest", create two channels: one realtime with a High threshold, one digest with no severity limit.',
+                  )}
                 </p>
               </div>
 
@@ -574,7 +594,9 @@ export default function NotifyPage() {
                   onChange={(e) => setF({ ratePerMin: e.target.value })}
                 />
                 <p className="text-muted-foreground text-xs">
-                  {t("Leave empty to use the channel default; 0 means no limit. Going over the limit never drops messages, only delays them.")}
+                  {t(
+                    "Leave empty to use the channel default; 0 means no limit. Going over the limit never drops messages, only delays them.",
+                  )}
                 </p>
               </div>
 
@@ -619,7 +641,9 @@ export default function NotifyPage() {
                       value={form.excludeText}
                       onChange={(e) => setF({ excludeText: e.target.value })}
                     />
-                    <p className="text-muted-foreground text-xs">{t("Exclusion beats inclusion: an item matching both is excluded.")}</p>
+                    <p className="text-muted-foreground text-xs">
+                      {t("Exclusion beats inclusion: an item matching both is excluded.")}
+                    </p>
                   </div>
                   <div className="grid gap-2">
                     <Label htmlFor="n-tasks">{t("Restrict to task IDs")}</Label>
@@ -638,7 +662,9 @@ export default function NotifyPage() {
                       value={form.assetIDsText}
                       onChange={(e) => setF({ assetIDsText: e.target.value })}
                     />
-                    <p className="text-muted-foreground text-xs">{t("Empty task/asset = no restriction; when filled, the finding must intersect them.")}</p>
+                    <p className="text-muted-foreground text-xs">
+                      {t("Empty task/asset = no restriction; when filled, the finding must intersect them.")}
+                    </p>
                   </div>
                   <div className="flex items-center gap-2 text-sm">
                     <Switch

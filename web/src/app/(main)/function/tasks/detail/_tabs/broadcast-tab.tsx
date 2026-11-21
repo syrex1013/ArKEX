@@ -28,13 +28,13 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { intlLocale, t } from "@/i18n";
 import { api } from "@/lib/api";
+import { setVisibleInterval } from "@/lib/polling";
 import { type Tone, toneClasses, toneDot } from "@/lib/status";
 import { taskAssetTypeLabel } from "@/lib/task-assets";
 import type { Edge, ExploreKind, FindingAsset, NewAssetType, TaskNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { setVisibleInterval } from "@/lib/polling";
-import { intlLocale, t } from "@/i18n";
 
 const PAGE_SIZES = [20, 50, 100];
 const POLL_MS = 8000;

@@ -36,6 +36,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { intlLocale, t } from "@/i18n";
 import { statusMeta, type Tone, toneClasses } from "@/lib/status";
 import type {
   ActiveFindingRetest,
@@ -46,7 +47,6 @@ import type {
   VerificationStatus,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { intlLocale, t } from "@/i18n";
 
 export const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
 
@@ -70,13 +70,7 @@ export const VERIFICATION_STATUSES: VerificationStatus[] = [
   "false_positive",
 ];
 
-export const FINDING_REPORT_STATES: FindingReportState[] = [
-  "none",
-  "submitted",
-  "accepted",
-  "rejected",
-  "duplicate",
-];
+export const FINDING_REPORT_STATES: FindingReportState[] = ["none", "submitted", "accepted", "rejected", "duplicate"];
 
 export const REPORT_STATE_META: Record<FindingReportState, { label: string; tone: Tone }> = {
   none: { label: t("Not submitted"), tone: "slate" },

@@ -28,11 +28,11 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { t } from "@/i18n";
 import { api } from "@/lib/api";
+import { setVisibleInterval } from "@/lib/polling";
 import type { LLMPoolMember, LLMPoolStatus, LLMProfile, LLMRetryOverride } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { ProfileRetryFields, RetryPolicyPanel, ZERO_OVERRIDE } from "./_components/retry";
-import { setVisibleInterval } from "@/lib/polling";
 
 // Renders a translated string, turning <b>…</b> spans into bold elements, so a sentence with emphasis stays one key.
 function rich(s: string): React.ReactNode[] {
@@ -62,7 +62,9 @@ const MAX_TOKENS_FIELD_HINTS: Record<string, string> = {
     "Which key carries the cap. max_tokens is the default and the vast majority of compatible gateways only accept it; OpenAI's official reasoning models (the o series / GPT-5) conversely only accept max_completion_tokens and fail outright with unsupported_parameter when they receive max_tokens.",
   ),
   anthropic: t("Only selectable for the openai format. Anthropic's field name is fixed as max_tokens."),
-  "openai-responses": t("Only selectable for the openai format. The Responses API's field name is fixed as max_output_tokens."),
+  "openai-responses": t(
+    "Only selectable for the openai format. The Responses API's field name is fixed as max_output_tokens.",
+  ),
   ollama: t("Only selectable for the openai format. Ollama's field name is fixed as max_tokens."),
 };
 // LLM profile formats. The default in the create form is "anthropic"; "ollama" is the
@@ -98,7 +100,8 @@ function healthOf(p: LLMProfile, m?: LLMPoolMember): Health {
   }
   if (m?.state === "tripped") {
     return {
-      label: m.cooldown_secs > 0 ? t("Tripped · {cooldown}", { cooldown: cooldownText(m.cooldown_secs) }) : t("Tripped"),
+      label:
+        m.cooldown_secs > 0 ? t("Tripped · {cooldown}", { cooldown: cooldownText(m.cooldown_secs) }) : t("Tripped"),
       cls: "border-destructive/50 text-destructive",
       hint: m.last_error,
     };
@@ -191,7 +194,9 @@ function PoolSheet({
           <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
             <div className="grid gap-0.5">
               <Label className="text-sm">{t("Enable pool")}</Label>
-              <p className="text-muted-foreground text-xs">{t("Off by default. When off, only the active profile is ever used and a failure stays a failure.")}</p>
+              <p className="text-muted-foreground text-xs">
+                {t("Off by default. When off, only the active profile is ever used and a failure stays a failure.")}
+              </p>
             </div>
             <Switch
               checked={enabled}
@@ -447,9 +452,12 @@ function ProfileSheet({
       );
       // Show the reply too: only when the model demonstrably spoke is this the same as working inside a session.
       if (r.ok)
-        toast.success(t("Connected · {latency}ms · {model}", { latency: r.latency_ms ?? "?", model: r.model ?? model }), {
-          description: r.reply ? t("Reply: {reply}", { reply: r.reply }) : undefined,
-        });
+        toast.success(
+          t("Connected · {latency}ms · {model}", { latency: r.latency_ms ?? "?", model: r.model ?? model }),
+          {
+            description: r.reply ? t("Reply: {reply}", { reply: r.reply }) : undefined,
+          },
+        );
       else toast.error(t("Connection failed: {error}", { error: r.error ?? t("unknown") }));
     } catch (e) {
       toast.error(t("Test error: {error}", { error: (e as Error).message }));
@@ -490,7 +498,8 @@ function ProfileSheet({
         user_agent: userAgent.trim(),
         retry,
       });
-      if (isNew) toast.success(t('Created: {name} (use "Set as active" on its card to enable it)', { name: name.trim() }));
+      if (isNew)
+        toast.success(t('Created: {name} (use "Set as active" on its card to enable it)', { name: name.trim() }));
       else
         toast.success(
           profile?.is_default ? t("Saved; the active profile takes effect immediately, no restart needed") : t("Saved"),
@@ -697,9 +706,7 @@ function ProfileSheet({
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="p-api-key">
-              {format === "ollama" ? t("API Key (optional for Ollama)") : "API Key"}
-            </Label>
+            <Label htmlFor="p-api-key">{format === "ollama" ? t("API Key (optional for Ollama)") : "API Key"}</Label>
             <Input
               id="p-api-key"
               type="password"
@@ -1047,9 +1054,7 @@ export default function LLMPage() {
 
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 pl-6 text-muted-foreground text-xs">
                       {p.api_key_hint && <span>{p.api_key_hint}</span>}
-                      <span>
-                        {t("{rps}/s · {rpm}/min", { rps: p.rate_per_second, rpm: p.rate_per_minute })}
-                      </span>
+                      <span>{t("{rps}/s · {rpm}/min", { rps: p.rate_per_second, rpm: p.rate_per_minute })}</span>
                       {p.proxy && <span className="truncate">{t("Proxy {proxy}", { proxy: p.proxy })}</span>}
                       {p.reasoning_effort && (
                         <span>

@@ -5,10 +5,10 @@ import * as React from "react";
 import { ShieldCheck, ShieldX } from "lucide-react";
 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { t } from "@/i18n";
 import { api } from "@/lib/api";
 import type { MullvadEgress } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { t } from "@/i18n";
 
 // Compact navbar indicator: Mullvad tunnel state plus the public egress IP.
 // The backend caches the outbound IP probe for 60s, so a 60s poll is cheap.
@@ -58,7 +58,12 @@ export function MullvadIndicator() {
           </span>
         </TooltipTrigger>
         <TooltipContent side="bottom">
-          <p>{t("WireGuard {mode} · interface {iface}", { mode: egress.mode || egress.mode_setting || "-", iface: egress.interface || "-" })}</p>
+          <p>
+            {t("WireGuard {mode} · interface {iface}", {
+              mode: egress.mode || egress.mode_setting || "-",
+              iface: egress.interface || "-",
+            })}
+          </p>
           {egress.egress_relay ? <p>{t("Relay {relay}", { relay: egress.egress_relay })}</p> : null}
           <p>{label}</p>
         </TooltipContent>

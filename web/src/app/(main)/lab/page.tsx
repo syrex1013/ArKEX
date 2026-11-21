@@ -3,11 +3,12 @@
 import * as React from "react";
 import { useState } from "react";
 
+import { Activity, Radio, ShieldAlert, Target, Terminal, Zap } from "lucide-react";
+
 import { CornerFrame } from "@/components/threatvector/corner-frame";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Activity, Radio, ShieldAlert, Target, Terminal, Zap } from "lucide-react";
 
 export default function LabPage() {
   const [taskId, setTaskId] = useState("");
@@ -63,7 +64,12 @@ export default function LabPage() {
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="lab-task">Task ID (optional binding)</Label>
-            <Input id="lab-task" value={taskId} onChange={(e) => setTaskId(e.target.value)} placeholder="numeric task id" />
+            <Input
+              id="lab-task"
+              value={taskId}
+              onChange={(e) => setTaskId(e.target.value)}
+              placeholder="numeric task id"
+            />
           </div>
         </div>
       </CornerFrame>

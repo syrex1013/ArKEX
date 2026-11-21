@@ -58,12 +58,12 @@ import {
 } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { t } from "@/i18n";
 import { api } from "@/lib/api";
 import { parseCompanyScopeText } from "@/lib/company-scope";
 import { httpHref } from "@/lib/http-href";
 import type { Asset, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { t } from "@/i18n";
 
 const METHOD_COLOR: Record<string, string> = {
   GET: "bg-emerald-100 text-emerald-700",
@@ -776,7 +776,9 @@ export default function AssetsPage() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t("Delete company · {name}", { name: companyDeleteTarget?.name ?? "" })}</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t("Delete company · {name}", { name: companyDeleteTarget?.name ?? "" })}
+            </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-3">
                 <p>

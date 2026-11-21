@@ -1,29 +1,15 @@
 "use client";
 
 import * as React from "react";
+
 import type { Graph as G6Graph } from "@antv/g6";
-import {
-  AppWindow,
-  Building2,
-  Globe,
-  Link2,
-  type LucideIcon,
-  Radio,
-  RefreshCw,
-  Server,
-  Waypoints,
-} from "lucide-react";
+import { AppWindow, Building2, Globe, Link2, type LucideIcon, Radio, RefreshCw, Server, Waypoints } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { t } from "@/i18n";
 import { api } from "@/lib/api";
 import { statusMeta } from "@/lib/status";
@@ -337,7 +323,9 @@ function AssetSheet({
           <>
             <SheetHeader className="border-b p-4">
               <div className="flex items-center gap-2.5 pr-8">
-                <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}>
+                <span
+                  className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}
+                >
                   <Icon className="size-4 text-white" />
                 </span>
                 <div className="min-w-0">
@@ -514,7 +502,10 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
   // Structure signature: rebuild the graph and re-run layout only when the visible node/edge set changes, to avoid needless jitter.
   const sig = React.useMemo(
     () =>
-      `${renderNodes.map((n) => `${n.key}:${n.fold ? "f" : n.node.tested ? "t" : "u"}`).sort().join(",")}|${renderEdges.length}`,
+      `${renderNodes
+        .map((n) => `${n.key}:${n.fold ? "f" : n.node.tested ? "t" : "u"}`)
+        .sort()
+        .join(",")}|${renderEdges.length}`,
     [renderNodes, renderEdges],
   );
 
@@ -701,7 +692,9 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
           </span>
         </div>
         <p className="text-muted-foreground/80 border-border/60 border-t pt-2 leading-relaxed">
-          {t('Force-directed layout; drag nodes and scroll to zoom. The gray "⋯" is a fold node — click it to expand more.')}
+          {t(
+            'Force-directed layout; drag nodes and scroll to zoom. The gray "⋯" is a fold node — click it to expand more.',
+          )}
         </p>
       </div>
 

@@ -36,7 +36,9 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { intlLocale, t } from "@/i18n";
 import { api } from "@/lib/api";
+import { setVisibleInterval } from "@/lib/polling";
 import type {
   InterceptApprovalFilter,
   InterceptApprovalRow,
@@ -47,8 +49,6 @@ import type {
   InterceptRisk,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { setVisibleInterval } from "@/lib/polling";
-import { intlLocale, t } from "@/i18n";
 
 function fmtTime(value?: string) {
   if (!value) return "—";
@@ -222,7 +222,11 @@ const contextLabels: Record<string, string> = {
   tool_result: t("Tool output"),
 };
 
-const actionLabels: Record<string, string> = { allow: t("Allow"), ask: t("Escalate to human approval"), deny: t("Deny") };
+const actionLabels: Record<string, string> = {
+  allow: t("Allow"),
+  ask: t("Escalate to human approval"),
+  deny: t("Deny"),
+};
 const executionLabels: Record<InterceptAudit["execution_status"], string> = {
   not_started: t("Not started"),
   not_executed: t("Not executed"),
@@ -238,7 +242,9 @@ function ModelReviewContext({ input }: { input: InterceptReviewInput }) {
       <div className="flex flex-col gap-2">
         <h3 className="font-medium text-sm">{t("Model review context")}</h3>
         <p className="text-muted-foreground text-xs">
-          {t("Below is the snapshot of the input actually sent to the review model for this decision. The background only helps it understand the current action; the verdict follows the review policy.")}
+          {t(
+            "Below is the snapshot of the input actually sent to the review model for this decision. The background only helps it understand the current action; the verdict follows the review policy.",
+          )}
           {input.version < 4
             ? ` ${t("This record used the legacy input format; the content actually sent at the time is preserved.")}`
             : null}
@@ -263,7 +269,9 @@ function ModelReviewContext({ input }: { input: InterceptReviewInput }) {
             <p className="text-muted-foreground text-xs">
               {input.background.source === "user_message"
                 ? t("Taken from the current user message.")
-                : t("This is the legacy Worker intent summary that used to be sent; the new Worker review no longer sends it.")}
+                : t(
+                    "This is the legacy Worker intent summary that used to be sent; the new Worker review no longer sends it.",
+                  )}
             </p>
           </div>
         ) : (
@@ -272,33 +280,57 @@ function ModelReviewContext({ input }: { input: InterceptReviewInput }) {
       ) : (
         <>
           {input.turn_input ? (
-            <CodeBlock label={t("Current turn input (legacy)")} text={input.turn_input} truncated={input.background_truncated} />
+            <CodeBlock
+              label={t("Current turn input (legacy)")}
+              text={input.turn_input}
+              truncated={input.background_truncated}
+            />
           ) : null}
           {input.task ? (
             <>
-              <CodeBlock label={t("Task description (legacy)")} text={input.task.description} truncated={input.task.truncated} />
+              <CodeBlock
+                label={t("Task description (legacy)")}
+                text={input.task.description}
+                truncated={input.task.truncated}
+              />
               <CodeBlock label={t("Task goals (legacy)")} text={input.task.goal} truncated={input.task.truncated} />
-              <CodeBlock label={t("Task operation constraints (legacy)")} text={JSON.stringify(input.task.constraints, null, 2)} />
+              <CodeBlock
+                label={t("Task operation constraints (legacy)")}
+                text={JSON.stringify(input.task.constraints, null, 2)}
+              />
             </>
           ) : null}
           {input.worker_intent ? (
-            <CodeBlock label={t("Worker intent (legacy)")} text={input.worker_intent} truncated={input.background_truncated} />
+            <CodeBlock
+              label={t("Worker intent (legacy)")}
+              text={input.worker_intent}
+              truncated={input.background_truncated}
+            />
           ) : null}
         </>
       )}
       {input.working_directory ? <CodeBlock label={t("Working directory")} text={input.working_directory} /> : null}
       {input.version >= 3 ? (
-        <p className="text-muted-foreground text-xs">{t("No past calls or execution results were sent for this review.")}</p>
+        <p className="text-muted-foreground text-xs">
+          {t("No past calls or execution results were sent for this review.")}
+        </p>
       ) : (
         <div className="flex min-w-0 flex-col gap-3">
-          <h4 className="font-medium text-muted-foreground text-xs">{t("Past calls provided to the model at the time (legacy)")}</h4>
+          <h4 className="font-medium text-muted-foreground text-xs">
+            {t("Past calls provided to the model at the time (legacy)")}
+          </h4>
           {input.history?.length ? (
             input.history.map((entry) => (
               <div key={entry.tool_use_id} className="flex min-w-0 flex-col gap-2 rounded-lg border p-3">
                 <p className="break-words font-medium text-xs">
-                  {entry.tool} · {entry.status === "succeeded" ? t("Succeeded") : t("Failed (may have partial side effects)")}
+                  {entry.tool} ·{" "}
+                  {entry.status === "succeeded" ? t("Succeeded") : t("Failed (may have partial side effects)")}
                 </p>
-                <CodeBlock label={t("Past call arguments")} text={entry.arguments_preview} truncated={entry.truncated} />
+                <CodeBlock
+                  label={t("Past call arguments")}
+                  text={entry.arguments_preview}
+                  truncated={entry.truncated}
+                />
                 <CodeBlock label={t("Past execution result")} text={entry.result} truncated={entry.truncated} />
               </div>
             ))
@@ -306,7 +338,9 @@ function ModelReviewContext({ input }: { input: InterceptReviewInput }) {
             <p className="text-muted-foreground text-xs">{t("No paired past tool executions were provided.")}</p>
           )}
           {input.history_truncated ? (
-            <p className="text-muted-foreground text-xs">{t("History is a limited window; some content is truncated.")}</p>
+            <p className="text-muted-foreground text-xs">
+              {t("History is a limited window; some content is truncated.")}
+            </p>
           ) : null}
         </div>
       )}
@@ -369,7 +403,9 @@ function AlwaysAllowAction({ id, prefix }: { id: number; prefix?: string }) {
         {prefix ? t('Always allow "{prefix} *"', { prefix }) : t("Always allow")}
       </Button>
       <p className="text-muted-foreground text-xs">
-        {t("The prefix does not constrain flags, and it does not cover what the program does next (git hooks, npm scripts, docker images).")}
+        {t(
+          "The prefix does not constrain flags, and it does not cover what the program does next (git hooks, npm scripts, docker images).",
+        )}
       </p>
     </div>
   );
@@ -426,7 +462,8 @@ export function ApprovalDetail({
   const audit = detail?.audit;
   let execution = audit ? executionLabels[audit.execution_status] : t("Not recorded");
   if (row.status === "pending") execution = t("Not started");
-  if (audit && audit.correlation !== "exact" && audit.effective_action === "allow") execution = t("No linked execution result");
+  if (audit && audit.correlation !== "exact" && audit.effective_action === "allow")
+    execution = t("No linked execution result");
   const command = typeof row.tool_input?.command === "string" ? row.tool_input.command : undefined;
   let initialLabel = source(row) === "model" ? t("Model initial decision") : t("Rule initial decision");
   if (audit?.model_fallback) initialLabel = t("Model error fallback");
@@ -537,7 +574,9 @@ export function ApprovalDetail({
       {detail && !audit ? (
         <Alert>
           <AlertDescription>
-            {t("This record has no saved approval detail snapshot, so the context, model initial decision, and execution output at the time cannot be restored.")}
+            {t(
+              "This record has no saved approval detail snapshot, so the context, model initial decision, and execution output at the time cannot be restored.",
+            )}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -557,8 +596,12 @@ export function ApprovalDetail({
                 <Alert>
                   <AlertDescription>
                     {audit.model_input_digest
-                      ? t("This legacy record saved only the review input fingerprint, not the input itself, so the context sent to the model at the time cannot be restored. This does not mean the review had no context; newly produced model decisions keep an input snapshot.")
-                      : t("This record has no saved model review input; it may have been decided directly by a rule, failed before the model call, or come from an old version.")}
+                      ? t(
+                          "This legacy record saved only the review input fingerprint, not the input itself, so the context sent to the model at the time cannot be restored. This does not mean the review had no context; newly produced model decisions keep an input snapshot.",
+                        )
+                      : t(
+                          "This record has no saved model review input; it may have been decided directly by a rule, failed before the model call, or come from an old version.",
+                        )}
                   </AlertDescription>
                 </Alert>
               )}
@@ -582,11 +625,16 @@ export function ApprovalDetail({
                         />
                       ) : null}
                       <section className="flex min-w-0 flex-col gap-3">
-                        <h3 className="font-medium text-muted-foreground text-xs">{t("Visible conversation context")}</h3>
+                        <h3 className="font-medium text-muted-foreground text-xs">
+                          {t("Visible conversation context")}
+                        </h3>
                         <p className="text-muted-foreground text-xs">
-                          {t('Conversation record excerpt saved at {time}. What the model actually used follows "Model review input".', {
-                            time: fmtTime(audit.captured_at),
-                          })}
+                          {t(
+                            'Conversation record excerpt saved at {time}. What the model actually used follows "Model review input".',
+                            {
+                              time: fmtTime(audit.captured_at),
+                            },
+                          )}
                         </p>
                         {audit.context_truncated ? (
                           <p className="text-muted-foreground text-xs">
@@ -617,7 +665,9 @@ export function ApprovalDetail({
               {audit.judge_answers?.length ? (
                 <CodeBlock
                   label={t("Judge answers")}
-                  text={audit.judge_answers.map((a) => `${a.id}: ${a.answer}${a.evidence ? ` - ${a.evidence}` : ""}`).join("\n")}
+                  text={audit.judge_answers
+                    .map((a) => `${a.id}: ${a.answer}${a.evidence ? ` - ${a.evidence}` : ""}`)
+                    .join("\n")}
                 />
               ) : null}
               <CodeBlock
@@ -632,7 +682,9 @@ export function ApprovalDetail({
                 <Alert>
                   <AlertDescription>
                     {audit.correlation === "ambiguous"
-                      ? t("Concurrent calls with identical arguments exist, so the tool call cannot be uniquely linked; this record does not show a guessed execution result.")
+                      ? t(
+                          "Concurrent calls with identical arguments exist, so the tool call cannot be uniquely linked; this record does not show a guessed execution result.",
+                        )
                       : t("No uniquely linkable tool call ID recorded.")}
                   </AlertDescription>
                 </Alert>
@@ -640,7 +692,9 @@ export function ApprovalDetail({
               <dl className="grid gap-2 text-muted-foreground text-xs [overflow-wrap:anywhere]">
                 <div>{t("Tool call ID: {value}", { value: audit.tool_use_id || t("Not recorded") })}</div>
                 <div>{t("Arguments digest SHA-256: {value}", { value: audit.input_digest })}</div>
-                <div>{t("Review config fingerprint SHA-256: {value}", { value: audit.config_digest || t("Not recorded") })}</div>
+                <div>
+                  {t("Review config fingerprint SHA-256: {value}", { value: audit.config_digest || t("Not recorded") })}
+                </div>
                 {audit.model_input_digest ? (
                   <div>{t("Model review input SHA-256: {value}", { value: audit.model_input_digest })}</div>
                 ) : null}
@@ -865,7 +919,9 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         // filter. Older requests must remain actionable even when newer decisions
         // fill the page or a filter would hide them.
         const [history, pending] = await Promise.allSettled([
-          taskId ? api.interceptTaskPage(taskId, page, pageSize, filter) : api.interceptHistoryPage(page, pageSize, filter),
+          taskId
+            ? api.interceptTaskPage(taskId, page, pageSize, filter)
+            : api.interceptHistoryPage(page, pageSize, filter),
           api.interceptPending(),
         ]);
         if (id !== request.current) return;
@@ -1010,10 +1066,19 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
       if (failed.length)
         toast.error(
           decision === "allowed"
-            ? t("{decided} allowed, {failed} not decided (see the errors listed above)", { decided, failed: failed.length })
-            : t("{decided} denied, {failed} not decided (see the errors listed above)", { decided, failed: failed.length }),
+            ? t("{decided} allowed, {failed} not decided (see the errors listed above)", {
+                decided,
+                failed: failed.length,
+              })
+            : t("{decided} denied, {failed} not decided (see the errors listed above)", {
+                decided,
+                failed: failed.length,
+              }),
         );
-      else toast.success(decision === "allowed" ? t("{count} allowed", { count: decided }) : t("{count} denied", { count: decided }));
+      else
+        toast.success(
+          decision === "allowed" ? t("{count} allowed", { count: decided }) : t("{count} denied", { count: decided }),
+        );
     } finally {
       decisionLock.current = false;
       setDeciding(false);
@@ -1028,9 +1093,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         <div className="flex items-center gap-2">
           <ClipboardListIcon className="size-5 text-muted-foreground" />
           <h1 className="font-semibold text-xl">{title}</h1>
-          {pending.length ? (
-            <Badge variant="secondary">{t("{count} pending", { count: pending.length })}</Badge>
-          ) : null}
+          {pending.length ? <Badge variant="secondary">{t("{count} pending", { count: pending.length })}</Badge> : null}
         </div>
         <Button variant="outline" size="sm" onClick={() => void load(true)} disabled={loading || refreshing}>
           <RefreshCwIcon data-icon="inline-start" className={cn(refreshing && "animate-spin")} />
@@ -1038,7 +1101,9 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         </Button>
       </div>
       <p className="text-muted-foreground text-sm">
-        {t("Expand a record to view the tool request and approval decision, along with the context and execution result at the time.")}
+        {t(
+          "Expand a record to view the tool request and approval decision, along with the context and execution result at the time.",
+        )}
       </p>
       <FieldGroup className="flex-row flex-wrap items-end gap-3" aria-label={t("Approval record filters")}>
         <Field className="w-full sm:w-40">
@@ -1123,7 +1188,9 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
       </FieldGroup>
       {error ? (
         <Alert variant="destructive">
-          <AlertDescription>{t("Failed to load records: {error}. Click Refresh to retry.", { error })}</AlertDescription>
+          <AlertDescription>
+            {t("Failed to load records: {error}. Click Refresh to retry.", { error })}
+          </AlertDescription>
         </Alert>
       ) : null}
       {pendingError ? (
@@ -1136,9 +1203,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
       {batchErrors.length ? (
         <Alert variant="destructive">
           <AlertDescription>
-            <p>
-              {t("{count} selected request(s) were not decided and stay pending:", { count: batchErrors.length })}
-            </p>
+            <p>{t("{count} selected request(s) were not decided and stay pending:", { count: batchErrors.length })}</p>
             <ul className="list-disc pl-4">
               {batchErrors.map((f) => (
                 <li key={f.id}>
@@ -1236,17 +1301,27 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
               <EmptyMedia variant="icon">
                 <ClipboardListIcon />
               </EmptyMedia>
-              <EmptyTitle>{filtered ? t("No approval records match the filters") : t("No approval records")}</EmptyTitle>
+              <EmptyTitle>
+                {filtered ? t("No approval records match the filters") : t("No approval records")}
+              </EmptyTitle>
               <EmptyDescription>
                 {filtered
-                  ? t("Adjust the approval status, decision source or deciding actor, or clear the filters to see all records.")
+                  ? t(
+                      "Adjust the approval status, decision source or deciding actor, or clear the filters to see all records.",
+                    )
                   : t("Records will appear here once a rule or model makes an approval decision.")}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : null}
         {rows.length ? (
-          <ApprovalTable rows={rows} busy={deciding} decide={decide} revision={revision} label={t("Approval record list")} />
+          <ApprovalTable
+            rows={rows}
+            busy={deciding}
+            decide={decide}
+            revision={revision}
+            label={t("Approval record list")}
+          />
         ) : null}
         {!loading && !error ? (
           <TablePagination

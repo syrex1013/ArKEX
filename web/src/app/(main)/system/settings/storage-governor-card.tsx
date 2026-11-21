@@ -33,7 +33,9 @@ export function StorageGovernorCard() {
 
   React.useEffect(() => {
     let alive = true;
-    api.systemStorage().then((b) => {
+    api
+      .systemStorage()
+      .then((b) => {
         if (alive) setData(b);
       })
       .catch((e: Error) => {
@@ -86,9 +88,7 @@ export function StorageGovernorCard() {
             </div>
             <div>
               <dt className="text-muted-foreground">{t("Compression ratio")}</dt>
-              <dd className="tabular-nums">
-                {data.compression_ratio > 0 ? data.compression_ratio.toFixed(3) : "—"}
-              </dd>
+              <dd className="tabular-nums">{data.compression_ratio > 0 ? data.compression_ratio.toFixed(3) : "—"}</dd>
             </div>
             <div>
               <dt className="text-muted-foreground">{t("Bytes saved")}</dt>

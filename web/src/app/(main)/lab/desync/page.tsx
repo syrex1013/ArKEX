@@ -73,7 +73,11 @@ export default function DesyncPage() {
               return (
                 <li key={i} className="rounded-md border border-border px-3 py-2">
                   <span className="font-medium">{kind}</span>
-                  {vuln ? <span className="text-destructive ml-2">vulnerable</span> : <span className="text-muted-foreground ml-2">clean/inconclusive</span>}
+                  {vuln ? (
+                    <span className="text-destructive ml-2">vulnerable</span>
+                  ) : (
+                    <span className="text-muted-foreground ml-2">clean/inconclusive</span>
+                  )}
                   {ev ? <div className="text-muted-foreground mt-1 font-mono text-xs">{ev}</div> : null}
                 </li>
               );

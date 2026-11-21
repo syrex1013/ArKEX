@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
-import type { EngagementWithStats } from "@/lib/types";
 import { setVisibleInterval } from "@/lib/polling";
+import type { EngagementWithStats } from "@/lib/types";
 
 // Shared engagement selection: localStorage key "artex_engagement" holds the current
 // engagement id as a string ("0" or empty = all engagements). Every open tab/page

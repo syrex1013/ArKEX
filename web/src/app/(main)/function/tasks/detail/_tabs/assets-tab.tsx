@@ -38,13 +38,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { t } from "@/i18n";
 import { api } from "@/lib/api";
 import { parseCompanyScopeText } from "@/lib/company-scope";
+import { setVisibleInterval } from "@/lib/polling";
 import { taskAssetSourceLabel } from "@/lib/task-assets";
 import type { Asset, NewAssetType } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { setVisibleInterval } from "@/lib/polling";
-import { t } from "@/i18n";
 
 const PAGE_SIZES = [25, 50, 100, 200];
 

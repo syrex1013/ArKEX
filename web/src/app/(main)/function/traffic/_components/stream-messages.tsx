@@ -6,9 +6,9 @@ import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { intlLocale, t } from "@/i18n";
 import { api } from "@/lib/api";
 import type { TrafficStreamMessage } from "@/lib/types";
-import { intlLocale, t } from "@/i18n";
 
 const PAGE_SIZE = 50;
 // Binary payloads loaded in full are shown as hex of their first 64 KiB.

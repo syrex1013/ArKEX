@@ -50,9 +50,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSideQuestions } from "@/hooks/use-side-questions";
+import { intlLocale, t } from "@/i18n";
 import { api, sseUrl } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
 import { MOCK } from "@/lib/mock/enabled";
+import { setVisibleInterval } from "@/lib/polling";
 import { isBtwCommand } from "@/lib/side-questions";
 import { taskAssetSourceLabel, taskAssetTypeLabel } from "@/lib/task-assets";
 import type {
@@ -69,8 +71,6 @@ import type {
   TokenTotal,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { setVisibleInterval } from "@/lib/polling";
-import { intlLocale, t } from "@/i18n";
 
 // resolutionLabel names the LLM a session runs on. The badge shows this alone and
 // keeps the model id in its tooltip. Env-backed configs can arrive without a name,
@@ -635,7 +635,11 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
         } else {
           // Soft delete: the intent is set to deleted with the reason recorded; nodes and output are kept.
           patchIntentState(session.intent_id, "deleted");
-          toast.success(t("Worker #{id} deleted (reason recorded; the planner will re-plan accordingly)", { id: session.intent_id }));
+          toast.success(
+            t("Worker #{id} deleted (reason recorded; the planner will re-plan accordingly)", {
+              id: session.intent_id,
+            }),
+          );
           setCancelReason("");
         }
       } catch (error) {
@@ -1943,7 +1947,9 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                 ) : (
                   <div className="pl-9 text-xs text-muted-foreground">
                     {isMain
-                      ? t("No conversation yet. Message the main agent below to steer exploration or step into the flow.")
+                      ? t(
+                          "No conversation yet. Message the main agent below to steer exploration or step into the flow.",
+                        )
                       : t("No activity records.")}
                   </div>
                 )}
@@ -2161,19 +2167,17 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
             <AlertDialogHeader>
               <AlertDialogTitle>{t("Delete Worker #{id}?", { id: cancelIntent?.intent_id ?? "" })}</AlertDialogTitle>
               <AlertDialogDescription className="break-words whitespace-normal">
-                {deleteMode === "hard" ? (
-                  boldMarkup(
-                    t(
-                      "**Hard delete** physically removes this intent and the downstream nodes **supported solely by it** (cascading to the leaves to avoid orphaned data); shared nodes, goals, and the task's root facts are kept. **This action is irreversible.** The planner is notified of the deletion and re-plans accordingly.",
-                    ),
-                  )
-                ) : (
-                  boldMarkup(
-                    t(
-                      '**Soft delete** marks the intent as "deleted" and records the reason; the intent node, execution records, registered facts, and findings **are all kept**. The planner receives "intent deleted by user + reason" and re-plans accordingly.',
-                    ),
-                  )
-                )}
+                {deleteMode === "hard"
+                  ? boldMarkup(
+                      t(
+                        "**Hard delete** physically removes this intent and the downstream nodes **supported solely by it** (cascading to the leaves to avoid orphaned data); shared nodes, goals, and the task's root facts are kept. **This action is irreversible.** The planner is notified of the deletion and re-plans accordingly.",
+                      ),
+                    )
+                  : boldMarkup(
+                      t(
+                        '**Soft delete** marks the intent as "deleted" and records the reason; the intent node, execution records, registered facts, and findings **are all kept**. The planner receives "intent deleted by user + reason" and re-plans accordingly.',
+                      ),
+                    )}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <div className="grid gap-3 py-1">

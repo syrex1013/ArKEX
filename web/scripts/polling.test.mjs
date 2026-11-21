@@ -1,10 +1,11 @@
-import { test } from "node:test";
+import ts from "typescript";
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import vm from "node:vm";
 import path from "node:path";
+import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+import vm from "node:vm";
 
 const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function moduleFor(name, globals = {}) {

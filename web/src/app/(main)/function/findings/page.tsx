@@ -40,9 +40,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { useEngagementSelection } from "@/hooks/use-engagement";
+import { t } from "@/i18n";
 import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
-import { useEngagementSelection } from "@/hooks/use-engagement";
+import { setVisibleInterval } from "@/lib/polling";
 import { statusMeta } from "@/lib/status";
 import type {
   ActiveFindingRetest,
@@ -73,8 +75,6 @@ import {
   VERIFICATION_META,
   VERIFICATION_STATUSES,
 } from "./_components/findings-table";
-import { setVisibleInterval } from "@/lib/polling";
-import { t } from "@/i18n";
 
 const FINDING_LIST_PREFERENCE_KEY = "artex_finding_list_preferences";
 
@@ -206,7 +206,8 @@ export default function FindingsPage() {
         setActiveRetests(Object.fromEntries(rows.map((item) => [item.finding_id, item])));
         failed = false;
       } catch (error) {
-        if (!disposed && !failed) toast.error(t("Failed to load retest status: {error}", { error: (error as Error).message }));
+        if (!disposed && !failed)
+          toast.error(t("Failed to load retest status: {error}", { error: (error as Error).message }));
         failed = true;
       } finally {
         if (!disposed) timer = setTimeout(() => void refreshRetests(), 3000);
@@ -431,7 +432,18 @@ export default function FindingsPage() {
       setAssetTree((current) => ({ ...current, loading: false }));
       toast.error(t("Failed to load the asset tree: {error}", { error: (e as Error).message }));
     }
-  }, [engagementId, filterFingerprint, reportState, severity, status, verificationStatus, vulnclass, task, query, sort]);
+  }, [
+    engagementId,
+    filterFingerprint,
+    reportState,
+    severity,
+    status,
+    verificationStatus,
+    vulnclass,
+    task,
+    query,
+    sort,
+  ]);
 
   const refreshGroups = React.useCallback(async () => {
     const requestFilter = filterFingerprint;
@@ -458,7 +470,20 @@ export default function FindingsPage() {
     } catch {
       // Polling keeps the last successful snapshot visible.
     }
-  }, [engagementId, filterFingerprint, page, pageSize, reportState, severity, status, verificationStatus, vulnclass, task, query, sort]);
+  }, [
+    engagementId,
+    filterFingerprint,
+    page,
+    pageSize,
+    reportState,
+    severity,
+    status,
+    verificationStatus,
+    vulnclass,
+    task,
+    query,
+    sort,
+  ]);
 
   const loadGroup = React.useCallback(
     async (key: string, groupPage: number, groupPageSize: number) => {
@@ -1169,7 +1194,11 @@ export default function FindingsPage() {
                   }}
                   disabled={bulkBusy}
                 >
-                  <SelectTrigger size="sm" className="w-44" aria-label={t("Set the report stage of the selected findings")}>
+                  <SelectTrigger
+                    size="sm"
+                    className="w-44"
+                    aria-label={t("Set the report stage of the selected findings")}
+                  >
                     <SelectValue placeholder={bulkBusy ? t("Updating…") : t("Set report stage")} />
                   </SelectTrigger>
                   <SelectContent>
@@ -1237,7 +1266,9 @@ export default function FindingsPage() {
                     </button>
                   </React.Fragment>
                 ))}
-                <span className="ml-auto shrink-0 text-xs tabular-nums">{t("{count} in total", { count: flat.total })}</span>
+                <span className="ml-auto shrink-0 text-xs tabular-nums">
+                  {t("{count} in total", { count: flat.total })}
+                </span>
               </div>
               {flatListCard}
             </div>
@@ -1343,7 +1374,9 @@ export default function FindingsPage() {
             })}
             {groups.length === 0 && (
               <Card>
-                <CardContent className="py-12 text-center text-sm text-muted-foreground">{t("No matching findings.")}</CardContent>
+                <CardContent className="py-12 text-center text-sm text-muted-foreground">
+                  {t("No matching findings.")}
+                </CardContent>
               </Card>
             )}
             <TablePagination
