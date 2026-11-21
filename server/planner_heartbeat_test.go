@@ -24,9 +24,7 @@ import (
 // that. Under the old code the heartbeat round never runs; now it must.
 func TestPlannerHeartbeatSurvivesSkippedRounds(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db.SkipPGUnavailable(t, err)
 	t.Cleanup(func() { _ = m.Close() })
 	if m.pg == nil {
 		db.SkipNoPG(t)
