@@ -493,6 +493,20 @@ func (n *Notifier) renderBatch(ctx context.Context, deliveries []*db.Notificatio
 // itemFor renders an event snapshot into a notification item, also resolving
 // asset names and the detail back-link.
 func (n *Notifier) itemFor(ctx context.Context, snap notify.Snapshot, baseURL string) (notify.Item, error) {
+	if snap.Kind == notify.EventTaskStatusChanged {
+		name := strings.TrimSpace(snap.Task)
+		if name == "" {
+			name = strings.TrimSpace(snap.Name)
+		}
+		item := notify.Item{
+			Kind: snap.Kind, TaskID: snap.TaskID, Name: name,
+			FromStatus: snap.FromStatus, ToStatus: snap.ToStatus,
+		}
+		if baseURL != "" && snap.TaskID > 0 {
+			item.DetailURL = fmt.Sprintf("%s/function/tasks/detail?id=%d", baseURL, snap.TaskID)
+		}
+		return item, nil
+	}
 	assets, err := n.pg.NotificationAssetNames(ctx, snap.AssetIDs)
 	if err != nil {
 		// Failing to resolve asset names must not block delivery: missing names is
@@ -629,9 +643,8 @@ func parseSnapshot(dl *db.NotificationDelivery) (notify.Snapshot, error) {
 	if err := json.Unmarshal(dl.Snapshot, &snap); err != nil {
 		return snap, fmt.Errorf("failed to parse event snapshot of delivery %d: %w", dl.ID, err)
 	}
-	if snap.Kind == "" {
-		// The event kind is authoritative on the event row; the copy in the
-		// snapshot may have been written by an older version.
+	if dl.EventKind != "" {
+		// The event row is authoritative even when an older snapshot has a kind.
 		snap.Kind = dl.EventKind
 	}
 	return snap, nil

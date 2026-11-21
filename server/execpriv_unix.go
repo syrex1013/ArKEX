@@ -88,6 +88,17 @@ func prepareExecHome(p ExecPrivilege, dataDir string) error {
 	if err := os.Chmod(home, 0o700); err != nil {
 		return err
 	}
+	// Entries created while the home was root's (an npm cache from a run before
+	// the executor existed) would stay root-owned and unwritable to the
+	// executor; reclaim them too. Best effort: a stray entry must not block
+	// startup.
+	_ = filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || path == home {
+			return nil
+		}
+		_ = os.Lchown(path, int(p.UID), int(p.GID))
+		return nil
+	})
 	return os.Setenv(envExecHome, home)
 }
 

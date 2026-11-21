@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -162,6 +164,38 @@ func parseMCPURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
+// proxyTransport builds the transport shared by the HTTP and SSE MCP clients.
+// proxyCA, when set, is added to the system roots: a recording egress proxy
+// re-signs target certificates, and without its CA every HTTPS MCP handshake
+// fails with "unable to get local issuer certificate".
+func proxyTransport(proxyURL, proxyCA string, insecure bool) (*http.Transport, error) {
+	tr := &http.Transport{}
+	if proxyURL != "" {
+		if pu, err := url.Parse(proxyURL); err == nil && pu.Host != "" {
+			tr.Proxy = http.ProxyURL(pu)
+		}
+	}
+	cfg := &tls.Config{InsecureSkipVerify: insecure}
+	if proxyCA != "" {
+		pem, err := os.ReadFile(proxyCA)
+		if err != nil {
+			return nil, fmt.Errorf("mcp proxy CA %s: %w", proxyCA, err)
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("mcp proxy CA %s: no certificate found", proxyCA)
+		}
+		cfg.RootCAs = pool
+	}
+	if !insecure || cfg.RootCAs != nil {
+		tr.TLSClientConfig = cfg
+	}
+	return tr, nil
+}
+
 // New connects to a remote MCP endpoint and performs the initialize handshake.
 // headers are sent on every request (Authorization, custom API keys, …).
 // When insecure is true, TLS certificate verification is skipped so servers that
@@ -169,7 +203,11 @@ func parseMCPURL(raw string) (*url.URL, error) {
 // timeoutSeconds bounds each request (handshake, tools/list, one tools/call); 0
 // falls back to the 120s default. Analysis servers with minutes-long tool calls
 // raise it per server.
-func New(ctx context.Context, server, endpoint string, headers map[string]string, insecure bool, timeoutSeconds int, proxyURL string) (*Client, error) {
+// proxyCA is the PEM file of the egress MITM CA: a recording proxy re-signs every
+// target certificate, so without it the handshake fails ("unable to get local
+// issuer certificate") and the server looks down. Empty means the proxy preserves
+// real certificates (or there is no proxy).
+func New(ctx context.Context, server, endpoint string, headers map[string]string, insecure bool, timeoutSeconds int, proxyURL, proxyCA string) (*Client, error) {
 	cleanHeaders, err := normalizeHeaders(headers)
 	if err != nil {
 		return nil, err
@@ -183,14 +221,9 @@ func New(ctx context.Context, server, endpoint string, headers map[string]string
 		return nil, err
 	}
 	hc := &http.Client{Timeout: timeout, CheckRedirect: redirectPolicy(base)}
-	tr := &http.Transport{}
-	if proxyURL != "" {
-		if pu, err := url.Parse(proxyURL); err == nil && pu.Host != "" {
-			tr.Proxy = http.ProxyURL(pu)
-		}
-	}
-	if insecure {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	tr, err := proxyTransport(proxyURL, proxyCA, insecure)
+	if err != nil {
+		return nil, err
 	}
 	hc.Transport = tr
 	c := &Client{
@@ -209,7 +242,7 @@ func New(ctx context.Context, server, endpoint string, headers map[string]string
 // NewSSE connects to the legacy MCP SSE transport: a long-lived GET /sse
 // announces a per-session POST /message endpoint, while JSON-RPC responses are
 // delivered asynchronously as SSE message events.
-func NewSSE(ctx context.Context, server, sseURL string, headers map[string]string, insecure bool, proxyURL string) (*Client, error) {
+func NewSSE(ctx context.Context, server, sseURL string, headers map[string]string, insecure bool, proxyURL, proxyCA string) (*Client, error) {
 	cleanHeaders, err := normalizeHeaders(headers)
 	if err != nil {
 		return nil, err
@@ -219,14 +252,9 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		return nil, err
 	}
 	hc := &http.Client{CheckRedirect: redirectPolicy(base)} // the SSE stream is intentionally long-lived.
-	tr := &http.Transport{}
-	if proxyURL != "" {
-		if pu, err := url.Parse(proxyURL); err == nil && pu.Host != "" {
-			tr.Proxy = http.ProxyURL(pu)
-		}
-	}
-	if insecure {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	tr, err := proxyTransport(proxyURL, proxyCA, insecure)
+	if err != nil {
+		return nil, err
 	}
 	hc.Transport = tr
 	streamCtx, cancel := context.WithCancel(context.Background())

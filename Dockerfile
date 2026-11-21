@@ -30,7 +30,7 @@ COPY go.mod go.sum ./
 # Persistent module + compile caches: after the first build, later builds only
 # compile changed packages (Sliver/wireguard-go/gVisor are ~thousands of pkgs).
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
-COPY . .
+COPY --exclude=web --exclude=skills . .
 # Reuse the frontend built above; build.sh skips its own frontend step.
 COPY --from=web /src/web/out ./server/webui/dist
 ARG ARTEX_VERSION=dev
@@ -69,7 +69,8 @@ ARG SQLMAP_COMMIT=cceda39208b5aad478de2c3f731df4239d9881f6
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git unzip \
     && rm -rf /var/lib/apt/lists/*
-RUN set -eux; \
+RUN --mount=type=cache,target=/root/.cache/tools-dl \
+    set -eux; \
     case "${TARGETARCH:-amd64}" in \
       amd64) PD_ARCH=amd64; FFUF_ARCH=amd64; DALFOX_ARCH=x86_64 ;; \
       arm64) PD_ARCH=arm64; FFUF_ARCH=arm64; DALFOX_ARCH=aarch64 ;; \
@@ -77,17 +78,20 @@ RUN set -eux; \
     esac; \
     mkdir -p /out; \
     fetch() { base="$1"; asset="$2"; sums="$3"; name="$4"; \
+      cached="/root/.cache/tools-dl/$asset"; \
+      if [ ! -f "$cached" ]; then \
+        curl -fsSL "$base/$asset" -o "$cached.tmp" && mv "$cached.tmp" "$cached"; \
+      fi; \
       rm -rf /tmp/t; mkdir -p /tmp/t/x; \
-      curl -fsSL "$base/$asset" -o "/tmp/t/$asset"; \
       curl -fsSL "$base/$sums" -o /tmp/t/sums.txt; \
       want="$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' /tmp/t/sums.txt)"; \
       if [ -z "$want" ]; then echo "no checksum entry for $asset" >&2; exit 1; fi; \
-      got="$(sha256sum "/tmp/t/$asset" | cut -d' ' -f1)"; \
-      if [ "$want" != "$got" ]; then echo "checksum mismatch for $asset: want $want got $got" >&2; exit 1; fi; \
-      case "$asset" in *.zip) unzip -q "/tmp/t/$asset" -d /tmp/t/x ;; *) tar -xzf "/tmp/t/$asset" -C /tmp/t/x ;; esac; \
+      got="$(sha256sum "$cached" | cut -d' ' -f1)"; \
+      if [ "$want" != "$got" ]; then echo "checksum mismatch for $asset: want $want got $got" >&2; rm -f "$cached"; exit 1; fi; \
+      case "$asset" in *.zip) unzip -q "$cached" -d /tmp/t/x ;; *) tar -xzf "$cached" -C /tmp/t/x ;; esac; \
       find /tmp/t/x -type f -name "$name" -exec install -m 0755 {} /out/ \; ; \
       [ -x "/out/$name" ] || { echo "$name not found in $asset" >&2; exit 1; }; \
-      rm -rf /tmp/t; }; \
+      rm -rf /tmp/t/x /tmp/t/sums.txt; }; \
     gh="https://github.com"; \
     fetch "$gh/projectdiscovery/nuclei/releases/download/$NUCLEI_VERSION" \
       "nuclei_${NUCLEI_VERSION#v}_linux_${PD_ARCH}.zip" "nuclei_${NUCLEI_VERSION#v}_checksums.txt" nuclei; \
@@ -119,7 +123,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # bookworm's apt nodejs is 18, Playwright requires >=20, and 20 is end-of-life.
 # 22 matches the CI and release workflows.
 ARG NODE_VERSION=22.23.4
-RUN set -eux; \
+RUN --mount=type=cache,target=/root/.cache/node-dl \
+    set -eux; \
     case "${TARGETARCH:-amd64}" in \
       amd64) NODE_ARCH=x64 ;; \
       arm64) NODE_ARCH=arm64 ;; \
@@ -127,14 +132,17 @@ RUN set -eux; \
     esac; \
     base="https://nodejs.org/dist/v${NODE_VERSION}"; \
     asset="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"; \
-    curl -fsSL "$base/$asset" -o "/tmp/$asset"; \
+    cached="/root/.cache/node-dl/$asset"; \
+    if [ ! -f "$cached" ]; then \
+      curl -fsSL "$base/$asset" -o "$cached.tmp" && mv "$cached.tmp" "$cached"; \
+    fi; \
     curl -fsSL "$base/SHASUMS256.txt" -o /tmp/SHASUMS256.txt; \
     want="$(awk -v a="$asset" '$2 == a { print $1 }' /tmp/SHASUMS256.txt)"; \
     if [ -z "$want" ]; then echo "no checksum entry for $asset" >&2; exit 1; fi; \
-    got="$(sha256sum "/tmp/$asset" | cut -d' ' -f1)"; \
-    if [ "$want" != "$got" ]; then echo "checksum mismatch for $asset: want $want got $got" >&2; exit 1; fi; \
-    tar -xJf "/tmp/$asset" -C /usr/local --strip-components=1 --no-same-owner; \
-    rm -f "/tmp/$asset" /tmp/SHASUMS256.txt; \
+    got="$(sha256sum "$cached" | cut -d' ' -f1)"; \
+    if [ "$want" != "$got" ]; then echo "checksum mismatch for $asset: want $want got $got" >&2; rm -f "$cached"; exit 1; fi; \
+    tar -xJf "$cached" -C /usr/local --strip-components=1 --no-same-owner; \
+    rm -f /tmp/SHASUMS256.txt; \
     node --version; npm --version
 # Pinned, checksum-verified recon binaries and the sqlmap checkout from the tools stage.
 COPY --from=tools /out/ /usr/local/bin/
@@ -151,9 +159,10 @@ RUN set -eux; \
 # would fail under a program's egress allowlist.
 ARG BBOT_VERSION=3.0.2
 # arm64: bbot's Chrome and retirejs's Node are x86-64; use native builds.
-RUN set -eux; \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
     python -m venv /opt/bbot; \
-    /opt/bbot/bin/pip install --no-cache-dir "bbot==${BBOT_VERSION}"; \
+    /opt/bbot/bin/pip install "bbot==${BBOT_VERSION}"; \
     ln -s /opt/bbot/bin/bbot /usr/local/bin/bbot; \
     if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
       apt-get update; \
@@ -189,7 +198,7 @@ ARG PLAYWRIGHT_VERSION=1.64.1
 # playwright-core's exports map hides cli.js from require.resolve, so run the
 # binary npm links for @playwright/mcp instead: it is the copy MCP actually
 # loads, and it installs the Chromium revision that copy expects.
-RUN npm install -g "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" "playwright@${PLAYWRIGHT_VERSION}" \
+RUN --mount=type=cache,target=/root/.npm npm install -g "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" "playwright@${PLAYWRIGHT_VERSION}" \
     && playwright-cli --help \
     && playwright install --with-deps chromium \
     && "$(npm root -g)/@playwright/mcp/node_modules/.bin/playwright-core" install chromium \
@@ -199,19 +208,16 @@ RUN npm install -g "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" "@playwright/cli@
 # cache, which /root's 0711 lets the executor reach.
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 WORKDIR /app
-# Binary compiled from source in the build stage above.
-COPY --from=build /out/artex /app/artex
-# Daemon startup script: relaunches the process after a crash and forwards SIGTERM
-# to artex — docker stop only signals PID 1; without forwarding, artex never receives it,
-# cannot shut down gracefully, and is hard-killed by SIGKILL after 10 seconds.
-COPY start.sh /app/start.sh
-RUN chmod +x /app/artex /app/start.sh && mkdir -p -m 0700 /app/keys \
+RUN mkdir -p -m 0700 /app/keys \
     && chmod 0711 /root
 # No setuid or setgid programs (su, passwd, mount, bbot's chrome_sandbox, ...): an
 # agent process runs as the executor and must not regain root through one, even
 # when the container runs without docker-compose.yml's no-new-privileges.
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +
-COPY skills/ /app/skills/
+# Keep runtime preparation and skills cached across application binary updates.
+COPY --link skills/ /app/skills/
+COPY --link --chmod=0755 start.sh /app/start.sh
+COPY --link --chmod=0755 --from=build /out/artex /app/artex
 # persistence points: data/ (traffic index, task files, transcripts) and keys/ (jwt.key, secret.key, via ARTEX_JWT_KEY_DIR)
 VOLUME ["/app/data", "/app/keys"]
 EXPOSE 8787 8788

@@ -294,7 +294,7 @@ export default function MCPPage() {
               <Input
                 id="m-args"
                 className="font-mono"
-                placeholder="-y @modelcontextprotocol/server-filesystem /data"
+                placeholder="-y @modelcontextprotocol/server-filesystem /app/data"
                 value={form.args}
                 onChange={(e) => setF({ args: e.target.value })}
               />

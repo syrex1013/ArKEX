@@ -1179,6 +1179,17 @@ func (m *Manager) MCPTaskProxy() string {
 	return ""
 }
 
+// MCPTaskCA returns the certificate MCP transports must trust, parallel to
+// MCPTaskProxy. The recording MITM re-signs every target cert, so a stdio npx
+// child or Go HTTP client that lacks this CA fails the TLS handshake and the
+// server reads as "connection closed". Empty when capture is off (real certs).
+func (m *Manager) MCPTaskCA() string {
+	if m.MCPTaskProxy() == "" {
+		return ""
+	}
+	return m.ProxyCACert()
+}
+
 // mullvadRelayClient lazily builds the Manager-owned Mullvad relay client
 // (used by the watchdog, which runs outside any HTTP request).
 func (m *Manager) mullvadRelayClient() *mullvad.Client {
@@ -1906,7 +1917,7 @@ func (m *Manager) ApplyTaskPause(id string) error {
 	}
 	var mode string
 	err = m.pg.QueryRow(`UPDATE tasks
-		SET paused=true, queued=false, queued_at=NULL, paused_at=now()
+		SET status='paused', paused=true, queued=false, queued_at=NULL, paused_at=now()
 		WHERE id=$1 AND deleted_at IS NULL AND paused=false
 		  AND status NOT IN ('done','failed','timeout')
 		RETURNING COALESCE(queue_mode,'')`, n).Scan(&mode)
@@ -1919,6 +1930,7 @@ func (m *Manager) ApplyTaskPause(id string) error {
 	m.mu.Lock()
 	if t := m.tasks[id]; t != nil {
 		t.updateLifecycle(func(state *taskLifecycleState) {
+			state.Status = "paused"
 			state.Paused = true
 			state.Queued = false
 			state.QueuedAt = 0

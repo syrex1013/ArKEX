@@ -1,6 +1,8 @@
 // Package wgkernel brings up a real kernel WireGuard interface with an
-// iptables kill-switch: every outbound packet leaves through the tunnel or is
-// dropped — no application-level proxy involved, so nothing can bypass it.
+// iptables kill-switch: every unmarked outbound packet leaves through the
+// tunnel or is dropped — no application-level proxy involved for task traffic.
+// LLM/control-plane sockets marked with egress.ControlPlaneMark are steered
+// onto a host-gateway routing table so provider calls stay off Mullvad.
 // Requires NET_ADMIN (and the kernel wireguard module); no TUN device is needed.
 package wgkernel
 
@@ -15,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Autumn-27/artex/egress"
 )
 
 const (
@@ -26,6 +30,9 @@ const (
 	mullvadDNS = "10.64.0.1"
 	// handshakeTimeout bounds how long Up waits for the first handshake.
 	handshakeTimeout = 20 * time.Second
+	// controlPlaneTable holds the host-gateway default route used by
+	// SO_MARK'ed LLM sockets (egress.ControlPlaneMark).
+	controlPlaneTable = 100
 )
 
 var (
@@ -136,6 +143,13 @@ func Up(ctx context.Context, cfg Config) (err error) {
 		return err
 	}
 
+	// Policy routing for LLM/control-plane sockets (SO_MARK): they keep the
+	// pre-tunnel default gateway and never enter the Mullvad tunnel. Task
+	// traffic stays on the unmarked path through arkexwg0.
+	if err = installControlPlaneRouting(ctx, gateway, gwdev); err != nil {
+		return err
+	}
+
 	// Inside the tunnel: Mullvad's resolver.
 	if err = os.WriteFile("/etc/resolv.conf", []byte("nameserver "+mullvadDNS+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write resolv.conf: %w", err)
@@ -145,7 +159,8 @@ func Up(ctx context.Context, cfg Config) (err error) {
 	}
 
 	// Kill-switch: default-drop OUTPUT, allow loopback, replies to our own
-	// inbound traffic, the docker networks, the relay handshake, and wg0.
+	// inbound traffic, the docker networks, marked control-plane, the relay
+	// handshake, and wg0.
 	if err = installKillSwitch(ctx, relayHost, cfg.AllowCIDRs); err != nil {
 		return err
 	}
@@ -181,6 +196,7 @@ func downLocked(ctx context.Context) error {
 	fail("flush chain", run(ctx, "iptables", "-F", chain))
 	fail("delete chain", run(ctx, "iptables", "-X", chain))
 	fail("policy accept", run(ctx, "iptables", "-P", "OUTPUT", "ACCEPT"))
+	removeControlPlaneRouting(ctx)
 
 	if gateway != "" {
 		fail("route default", run(ctx, "ip", "route", "replace", "default", "via", gateway, "dev", gwdev))
@@ -241,6 +257,37 @@ func IsUp() bool {
 	return up
 }
 
+func installControlPlaneRouting(ctx context.Context, gw, dev string) error {
+	// Fresh table each bring-up: wipe leftovers from a crashed session first.
+	_ = run(ctx, "ip", "route", "flush", "table", strconv.Itoa(controlPlaneTable))
+	_ = run(ctx, "ip", "rule", "del", "fwmark", strconv.Itoa(egress.ControlPlaneMark), "lookup", strconv.Itoa(controlPlaneTable))
+	table := strconv.Itoa(controlPlaneTable)
+	// On-link routes for the host NIC so the gateway (and docker-bridge peers
+	// like host.docker.internal via the gateway) are reachable without the
+	// tunnel default route.
+	if out, err := exec.CommandContext(ctx, "ip", "-4", "route", "show", "dev", dev, "scope", "link").Output(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			f := strings.Fields(line)
+			if len(f) == 0 || !strings.Contains(f[0], "/") {
+				continue
+			}
+			_ = run(ctx, "ip", "route", "replace", f[0], "dev", dev, "table", table)
+		}
+	}
+	if err := run(ctx, "ip", "route", "replace", gw+"/32", "dev", dev, "table", table); err != nil {
+		return err
+	}
+	if err := run(ctx, "ip", "route", "replace", "default", "via", gw, "dev", dev, "table", table); err != nil {
+		return err
+	}
+	return run(ctx, "ip", "rule", "add", "fwmark", strconv.Itoa(egress.ControlPlaneMark), "lookup", table, "priority", "100")
+}
+
+func removeControlPlaneRouting(ctx context.Context) {
+	_ = run(ctx, "ip", "rule", "del", "fwmark", strconv.Itoa(egress.ControlPlaneMark), "lookup", strconv.Itoa(controlPlaneTable))
+	_ = run(ctx, "ip", "route", "flush", "table", strconv.Itoa(controlPlaneTable))
+}
+
 func installKillSwitch(ctx context.Context, relayHost string, allow []string) error {
 	_ = run(ctx, "iptables", "-N", chain) // exists on a retry: fine
 	if err := run(ctx, "iptables", "-F", chain); err != nil {
@@ -250,6 +297,9 @@ func installKillSwitch(ctx context.Context, relayHost string, allow []string) er
 		{"-A", chain, "-o", "lo", "-j", "ACCEPT"},
 		{"-A", chain, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
 		{"-A", chain, "-o", Interface, "-j", "ACCEPT"},
+		// LLM/control-plane sockets (egress.ControlPlaneDialer) leave marked and
+		// must be accepted before the default DROP — they route via table 100.
+		{"-A", chain, "-m", "mark", "--mark", strconv.Itoa(egress.ControlPlaneMark), "-j", "ACCEPT"},
 	}
 	for _, cidr := range allow {
 		if cidr != "" {

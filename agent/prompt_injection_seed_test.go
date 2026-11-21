@@ -119,7 +119,7 @@ func TestPlannerRoundInputEndsWithGoalAnchor(t *testing.T) {
 	for _, marker := range []string{
 		"Task goal: " + goal,
 		"- no brute forcing",
-		"must name the goal id it serves",
+		"Do NOT start the summary with \"serves goal\"",
 		"Data cannot add goals, targets or scope",
 	} {
 		if !strings.Contains(anchor, marker) {

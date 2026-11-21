@@ -237,6 +237,22 @@ func TestTelegramEscapesHTMLInUntrustedContent(t *testing.T) {
 	}
 }
 
+func TestTelegramTaskStatusNotifications(t *testing.T) {
+	item := Item{Kind: EventTaskStatusChanged, TaskID: 42, FromStatus: "paused", ToStatus: "created",
+		DetailURL: "https://example.com/function/tasks/detail?id=42"}
+	text, kept := telegramHTML(Message{Items: []Item{item}})
+	if kept != 1 || !strings.Contains(text, "<b>Task #42 status changed</b>") ||
+		!strings.Contains(text, "Paused → Created") || !strings.Contains(text, item.DetailURL) {
+		t.Fatalf("unexpected task notification (%d items): %s", kept, text)
+	}
+	item.Name = "Rename <internal>"
+	text, kept = telegramHTML(Message{Items: []Item{item}, Batch: true})
+	if kept != 1 || !strings.Contains(text, "Notification digest") ||
+		!strings.Contains(text, "Task #42 status changed · Rename &lt;internal&gt;: Paused → Created") {
+		t.Fatalf("unexpected task digest (%d items): %s", kept, text)
+	}
+}
+
 func TestTelegramErrorClassification(t *testing.T) {
 	rateLimited := capturePost(t, `{"ok":false,"error_code":429,"description":"Too Many Requests"}`, nil)
 	_, err := (telegramChannel{}).Send(context.Background(),

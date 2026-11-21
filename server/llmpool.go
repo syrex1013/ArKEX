@@ -255,7 +255,12 @@ func (s *Server) poolMember(p *db.LLMProfile, rank int) *llmpool.Member {
 		// Actual window, not CompactionWindow(): that helper floors at 32K for
 		// compaction math, which would let an 8K profile accept a 16K request
 		// and then 400 without failover.
-		WindowTokens: cfg.ContextWindowTokens(), Prov: prov,
+		WindowTokens: cfg.ContextWindowTokens(),
+		// Per-member noa budget guard: a request whose protected context
+		// exceeds this profile's window is refused before transport and fails
+		// over to the next member instead of 400ing (shouldFailover ignores
+		// 400s). The pool's own estimate skip stays as the cheap first filter.
+		Prov: agent.NewBudgetGuard(prov, cfg.ContextWindowTokens()),
 	}
 }
 
@@ -293,7 +298,8 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 	members := []*llmpool.Member{{
 		ID: head.ID, Name: head.Name, Model: head.Model, Format: head.Format,
 		Priority: head.Priority, Active: head.IsDefault, Rank: llmpool.RankActive,
-		WindowTokens: headCfg.ContextWindowTokens(), Prov: headProv,
+		WindowTokens: headCfg.ContextWindowTokens(),
+		Prov:         agent.NewBudgetGuard(headProv, headCfg.ContextWindowTokens()),
 	}}
 	for _, p := range profs {
 		if p.ID == headID {

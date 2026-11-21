@@ -1425,16 +1425,17 @@ func verifySkillFile(skillPath, wantName string, wantMCPs []string) error {
 	return fmt.Errorf("no skill loaded from %s", filepath.Base(skillPath))
 }
 
-// warnBrokenSkills logs skills whose parsed name does not match their directory
-// name: the signature of frontmatter that failed to parse and silently fell back
-// (fields empty, mcps gate lost). Best-effort, startup only.
+// warnBrokenSkills logs skills whose frontmatter carries no description: the
+// signature of frontmatter that failed to parse and silently fell back (fields
+// empty, mcps gate lost). A parsed name that merely differs from the directory
+// name is normal, so it is not evidence of breakage. Best-effort, startup only.
 func warnBrokenSkills(dir string) {
 	reg, err := loadSkillsConfined(dir)
 	if err != nil {
 		return
 	}
 	for _, s := range reg.List() {
-		if s.Dir == "" || s.Name == filepath.Base(s.Dir) {
+		if s.Dir == "" || s.Description != "" {
 			continue
 		}
 		log.Printf("[skill] %s: frontmatter did not parse (loaded under the directory name; description and mcps are empty) - fix the YAML in %s", s.Name, filepath.Join(s.Dir, "SKILL.md"))

@@ -38,7 +38,7 @@ func TestStreamableClientRequestTimeout(t *testing.T) {
 	defer cancel()
 
 	// timeout_seconds=1: the slow call is cut off well before the server answers.
-	c, err := New(ctx, "t", srv.URL, nil, false, 1, "")
+	c, err := New(ctx, "t", srv.URL, nil, false, 1, "", "")
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestStreamableClientRequestTimeout(t *testing.T) {
 	_ = c.Close()
 
 	// timeout_seconds=10: the same slow call completes.
-	c2, err := New(ctx, "t", srv.URL, nil, false, 10, "")
+	c2, err := New(ctx, "t", srv.URL, nil, false, 10, "", "")
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestStreamableClientRequestTimeout(t *testing.T) {
 	_ = c2.Close()
 
 	// timeout_seconds=0: falls back to the 120s default (call completes).
-	c3, err := New(ctx, "t", srv.URL, nil, false, 0, "")
+	c3, err := New(ctx, "t", srv.URL, nil, false, 0, "", "")
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestStreamableClientProtocolVersions(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			c, err := New(context.Background(), "t", srv.URL, nil, false, 0, "")
+			c, err := New(context.Background(), "t", srv.URL, nil, false, 0, "", "")
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -202,7 +202,7 @@ func TestStreamableClientVersionRejectionForms(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			c, err := New(context.Background(), "t", srv.URL, nil, false, 0, "")
+			c, err := New(context.Background(), "t", srv.URL, nil, false, 0, "", "")
 			for _, rec := range inits {
 				if rec.header != "" {
 					t.Fatalf("initialize carried MCP-Protocol-Version %q", rec.header)

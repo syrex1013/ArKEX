@@ -287,6 +287,31 @@ func TestSkipsMembersTooSmallForRequest(t *testing.T) {
 	}
 }
 
+// MaxTokens is a hard reservation on top of the prompt: a request whose prompt
+// fits a member's window but whose prompt+output budget doesn't must skip that
+// member too, or the client-side budget guard kills the run before failover.
+func TestSkipsMembersTooSmallForPromptPlusMaxTokens(t *testing.T) {
+	small, big := okProv("small", "s"), okProv("big", "b")
+	ms := member(1, "small", 10, small)
+	ms.WindowTokens = 128_000
+	mb := member(2, "big", 5, big)
+	mb.WindowTokens = 200_000
+	p := New([]*Member{ms, mb}, NewRegistry(nil, nil))
+
+	// ~140K prompt tokens by the crude estimate + 2K output: over 128K, under 200K.
+	req := llm.CompletionRequest{
+		Messages:  []llm.Message{llm.UserText(strings.Repeat("x", 140_000*7/2))},
+		MaxTokens: 2_000,
+	}
+	got, err := drain(p.Stream(context.Background(), req))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "b" || small.calls != 0 {
+		t.Fatalf("text=%q small.calls=%d — want the 200K member to serve it", got, small.calls)
+	}
+}
+
 // Everything tripped: probing the head beats stalling the engine outright.
 func TestAllTrippedStillProbesHead(t *testing.T) {
 	a, b := okProv("a", "a"), okProv("b", "b")

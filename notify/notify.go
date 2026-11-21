@@ -32,6 +32,7 @@ const (
 const (
 	EventFindingCreated       = "finding_created"
 	EventFindingStatusChanged = "finding_status_changed"
+	EventTaskStatusChanged    = "task_status_changed"
 )
 
 // InitKind is the fallback value for an empty kind in config.
@@ -71,6 +72,10 @@ func SeverityLabel(severity string) string {
 // status-change messages.
 func StatusLabel(status string) string {
 	switch status {
+	case "created":
+		return "Created"
+	case "paused":
+		return "Paused"
 	case "pending":
 		return "Pending"
 	case "in_progress":

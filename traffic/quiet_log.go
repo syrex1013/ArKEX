@@ -21,9 +21,13 @@ type benignMproxyLog struct {
 
 func (b *benignMproxyLog) Write(p []byte) (int, error) {
 	line := string(p)
+	if strings.Contains(line, "level=warning") && strings.Contains(line, "response body size >=") {
+		return len(p), nil
+	}
 	if strings.Contains(line, "level=error") && strings.Contains(line, "in=Proxy.") &&
 		(strings.Contains(line, "in=Proxy.attacker") &&
 			(strings.Contains(line, "msg=EOF") || strings.Contains(line, `: EOF"`) ||
+				strings.Contains(line, "client disconnected") ||
 				strings.Contains(line, "connection reset by peer") ||
 				strings.Contains(line, "use of closed network connection")) ||
 			strings.Contains(line, "WebSocket handle error: websocket: close 1005")) {

@@ -13,12 +13,13 @@ package notify
 // low" content. As a bonus, fan-out and rendering do not need to JOIN the
 // findings/tasks/assets tables.
 type Snapshot struct {
-	// Event kind: finding_created / finding_status_changed
+	// Event kind: finding_created / finding_status_changed / task_status_changed
 	Kind      string  `json:"kind"`
 	FindingID int64   `json:"finding_id"`
 	TaskID    int64   `json:"task_id"`
 	VulnClass string  `json:"vulnclass"`
 	Name      string  `json:"name"`
+	Task      string  `json:"task,omitempty"`
 	Severity  string  `json:"severity"`
 	Summary   string  `json:"summary"`
 	AssetIDs  []int64 `json:"asset_ids"`
@@ -27,8 +28,10 @@ type Snapshot struct {
 	ToStatus   string `json:"to_status,omitempty"`
 }
 
-// Item is a single vulnerability to be pushed, rendered by channels.
+// Item is a single event to be pushed, rendered by channels.
 type Item struct {
+	Kind      string
+	TaskID    int64
 	FindingID int64
 	Name      string
 	VulnClass string

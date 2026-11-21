@@ -287,6 +287,75 @@ func TestTaskLLMStreamRetriesPreStreamQuotaOnNextProfile(t *testing.T) {
 	}
 }
 
+// A request that cannot fit the active profile's window (noa budget guard or a
+// provider length error) must advance the task chain on the first failure —
+// no same-provider retries, no failure streak.
+func TestTaskLLMStreamAdvancesChainOnContextOverflow(t *testing.T) {
+	t.Parallel()
+	budget := fmt.Errorf("%w: estimate 139421 exceeds configured budget 128000; protected context cannot fit", agent.ErrNoaBudget)
+	first := &scriptedLLMProvider{err: budget}
+	second := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "bigger window"}}}
+	active := int64(18)
+	transitions := 0
+	hooks := taskLLMStreamHooks{
+		current: func(ctx context.Context) (taskLLMSelection, error) {
+			if active == 18 {
+				return taskLLMSelection{profileID: 18, provider: first}, nil
+			}
+			return taskLLMSelection{profileID: 2, provider: second}, nil
+		},
+		exhaust: func(selection taskLLMSelection, _ error) (db.TaskLLMTransition, error) {
+			if selection.profileID != 18 {
+				t.Fatalf("unexpected exhausted profile %d", selection.profileID)
+			}
+			active = 2
+			next := active
+			return db.TaskLLMTransition{PreviousProfileID: 18, NextProfileID: &next, Advanced: true}, nil
+		},
+		transition: func(taskLLMSelection, db.TaskLLMTransition, error) { transitions++ },
+	}
+
+	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Text != "bigger window" {
+		t.Fatalf("unexpected fallback events: %+v", events)
+	}
+	if first.calls != 1 || second.calls != 1 || transitions != 1 {
+		t.Fatalf("calls first=%d second=%d transitions=%d", first.calls, second.calls, transitions)
+	}
+}
+
+// A provider length rejection carries the same semantics as the budget guard.
+func TestTaskLLMStreamAdvancesChainOnProviderLengthError(t *testing.T) {
+	t.Parallel()
+	first := &scriptedLLMProvider{err: errors.New("anthropic: status 400: prompt is too long: 139421 tokens > 128000 maximum context")}
+	second := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "ok"}}}
+	active := int64(9)
+	hooks := taskLLMStreamHooks{
+		current: func(ctx context.Context) (taskLLMSelection, error) {
+			if active == 9 {
+				return taskLLMSelection{profileID: 9, provider: first}, nil
+			}
+			return taskLLMSelection{profileID: 2, provider: second}, nil
+		},
+		exhaust: func(selection taskLLMSelection, _ error) (db.TaskLLMTransition, error) {
+			active = 2
+			next := active
+			return db.TaskLLMTransition{PreviousProfileID: 9, NextProfileID: &next, Advanced: true}, nil
+		},
+	}
+
+	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Text != "ok" || first.calls != 1 || second.calls != 1 {
+		t.Fatalf("events=%+v first=%d second=%d", events, first.calls, second.calls)
+	}
+}
+
 func TestTaskLLMStreamRetriesAfterNonContentStartEvent(t *testing.T) {
 	t.Parallel()
 	quota := errors.New("anthropic: status 402: insufficient credit balance")

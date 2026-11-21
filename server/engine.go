@@ -1316,6 +1316,10 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 		log.Printf("[worker %s] task %s intent #%d paused", name, t.ID, intent.ID)
 		e.touch(t.ID)
+		// ask_operator / user pause removes this intent from open+running. Without a
+		// wake, the planner sleeps until the 10m heartbeat while the goal stays open
+		// and the frontier is empty — wake it so alternate work can be dispatched.
+		t.Notify()
 		return true
 	}
 	if action == "cancel" {

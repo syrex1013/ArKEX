@@ -287,7 +287,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			return a.TaskTimeoutWrapupMaxTurns, true
 		})
-		wireAgentAugment(m.pg, s.skillDir, s.hostTools, s.execPriv, s.m.MCPTaskProxy) // wire visible skills/MCP + traffic/orchestration host tools into the agent toolset
+		wireAgentAugment(m.pg, s.skillDir, s.hostTools, s.execPriv, s.m.MCPTaskProxy, s.m.MCPTaskCA) // wire visible skills/MCP + traffic/orchestration host tools into the agent toolset
 		domainReg := buildDomainReg(m.Assets())
 		wireTools(m.pg, domainReg)   // built-in tools table: filter per agent + override description/schema + inject defaults
 		seedPrompts(m.pg)            // seed built-in agent default prompt bodies into agent_prompts (only when empty)
@@ -1284,7 +1284,7 @@ func (s *Server) resolvedTaskStatus(t *Task) string {
 		return lifecycle.Status
 	case lifecycle.Queued:
 		return "queued"
-	case lifecycle.Paused || s.engine.IsPaused(t.ID):
+	case lifecycle.Paused || lifecycle.Status == "paused" || s.engine.IsPaused(t.ID):
 		return "paused"
 	case t.llmStateSnapshot().FailoverState == "chain_exhausted" && s.engine.Started(t.ID):
 		// LLM readiness is an execution dependency, not lifecycle state. Keeping

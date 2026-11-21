@@ -68,6 +68,11 @@ func New(members []*Member, health *Registry) *Pool {
 // Members returns the chain in order (read-only).
 func (p *Pool) Members() []*Member { return p.members }
 
+// FailoverWindowFiltered tells agent's noa budget guard that window enforcement
+// happens per member (each Prov is wrapped with a budget guard), so the guard
+// must not refuse on the head's window before the pool can try larger members.
+func (p *Pool) FailoverWindowFiltered() bool { return true }
+
 // Head returns the first member of the chain.
 func (p *Pool) Head() *Member { return p.members[0] }
 
@@ -331,6 +336,9 @@ func trimErr(err error) string {
 // estimateTokens roughly sizes a request so members whose context window clearly
 // can't hold it are skipped. Deliberately crude (~3.5 chars/token) and biased to
 // over-estimate slightly; it only needs to tell "fits" from "nowhere near".
+// MaxTokens counts 1:1 — it is a hard reservation the provider adds on top of
+// the prompt, and omitting it let a 128K-window head accept a ~142K request that
+// the client-side budget guard then refused before any failover could happen.
 func estimateTokens(req llm.CompletionRequest) int {
 	n := 0
 	for _, s := range req.System {
@@ -344,7 +352,7 @@ func estimateTokens(req llm.CompletionRequest) int {
 		// cheaply — charge a flat ~120 chars per top-level property instead.
 		n += len(t.Name) + len(t.Description) + len(t.InputSchema)*120
 	}
-	return n * 2 / 7 // ≈ len/3.5
+	return n*2/7 + req.MaxTokens // ≈ len/3.5, plus the 1:1 output reservation
 }
 
 func blocksLen(bs []llm.ContentBlock) int {

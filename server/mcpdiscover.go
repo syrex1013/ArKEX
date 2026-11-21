@@ -22,7 +22,9 @@ type mcpClient interface {
 
 // connectMCP dials one MCP server per its transport. Callers must Close the client.
 // proxyURL (may be empty) is forced onto http/sse transports for leak-proof task egress.
-func connectMCP(ctx context.Context, m *db.MCPServer, priv ExecPrivilege, proxyURL string) (mcpClient, error) {
+// proxyCA is the egress MITM CA those transports must trust when the proxy re-signs
+// certificates; empty when the proxy is a plain forwarder (capture off).
+func connectMCP(ctx context.Context, m *db.MCPServer, priv ExecPrivilege, proxyURL, proxyCA string) (mcpClient, error) {
 	switch m.Transport {
 	case "stdio":
 		if m.Command == "" {
@@ -33,26 +35,28 @@ func connectMCP(ctx context.Context, m *db.MCPServer, priv ExecPrivilege, proxyU
 		if err != nil {
 			return nil, err
 		}
-		return mcp.NewStdioClient(ctx, m.Name, command, stdioEnvWithProxy(jsonStrMap(m.Env), proxyURL), args...)
+		return mcp.NewStdioClient(ctx, m.Name, command, stdioEnvWithProxy(jsonStrMap(m.Env), proxyURL, proxyCA), args...)
 	case "http":
 		if m.URL == "" {
 			return nil, fmt.Errorf("http transport is missing a URL")
 		}
 		// env map doubles as HTTP headers (e.g. Authorization).
-		return mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure, m.TimeoutSeconds, proxyURL)
+		return mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure, m.TimeoutSeconds, proxyURL, proxyCA)
 	case "sse":
 		if m.URL == "" {
 			return nil, fmt.Errorf("sse transport is missing a URL")
 		}
-		return mcphttp.NewSSE(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure, proxyURL)
+		return mcphttp.NewSSE(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure, proxyURL, proxyCA)
 	default:
 		return nil, fmt.Errorf("unknown transport %q", m.Transport)
 	}
 }
 
-// stdioEnvWithProxy injects HTTP(S)/ALL_PROXY into a stdio MCP tool's child
-// environment so its own outbound requests follow the task egress contract.
-func stdioEnvWithProxy(env map[string]string, proxyURL string) map[string]string {
+// stdioEnvWithProxy injects HTTP(S)/ALL_PROXY and the egress MITM CA into a stdio
+// MCP tool's child environment so its own outbound requests follow the task egress
+// contract and verify the re-signed certificates (Node needs NODE_EXTRA_CA_CERTS;
+// a missing CA makes every npx MCP exit instead of answering tools/list).
+func stdioEnvWithProxy(env map[string]string, proxyURL, proxyCA string) map[string]string {
 	if proxyURL == "" {
 		return env
 	}
@@ -62,13 +66,18 @@ func stdioEnvWithProxy(env map[string]string, proxyURL string) map[string]string
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
 		env[k] = proxyURL
 	}
+	env["NODE_USE_ENV_PROXY"] = "1"
+	if proxyCA != "" {
+		env["NODE_EXTRA_CA_CERTS"] = proxyCA
+		env["SSL_CERT_FILE"] = proxyCA
+	}
 	return env
 }
 
 // discoverAndCacheMCP connects to one MCP, lists its tools, and persists the tool
 // names to mcp_tools_cache so the UI shows them without a live connection.
 func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error {
-	cl, err := connectMCP(ctx, m, s.execPriv, s.m.MCPTaskProxy())
+	cl, err := connectMCP(ctx, m, s.execPriv, s.m.MCPTaskProxy(), s.m.MCPTaskCA())
 	if err != nil {
 		_ = s.m.pg.UpdateMCPHealth(m.ID, false, err.Error())
 		return err

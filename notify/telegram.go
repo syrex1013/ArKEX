@@ -117,7 +117,6 @@ func telegramEndpoint(cfg map[string]any) (string, error) {
 func telegramHTML(m Message) (string, int) {
 	lim := m.limits()
 	var b strings.Builder
-	b.WriteString("<b>" + telegramEscape(markdownTitle(m)) + "</b>\n")
 	if m.Batch {
 		// Telegram's limit is in **characters**, so packing is measured in
 		// characters too (runeSize).
@@ -129,7 +128,6 @@ func telegramHTML(m Message) (string, int) {
 			return telegramBatchLine(it, idx+1, lim)
 		})
 		items := m.Items[:kept]
-		b.Reset()
 		b.WriteString("<b>" + telegramEscape(telegramBatchTitle(m, items, len(m.Items))) + "</b>")
 		for i, it := range items {
 			b.WriteString("\n" + telegramEscape(telegramBatchLine(it, i+1, lim)))
@@ -137,6 +135,11 @@ func telegramHTML(m Message) (string, int) {
 		b.WriteString(footer)
 		return TruncateHTML(b.String(), telegramTextLimit), kept
 	}
+	title := markdownTitle(m)
+	if len(m.Items) > 0 && m.Items[0].Kind == EventTaskStatusChanged {
+		title = telegramTaskTitle(m.Items[0])
+	}
+	b.WriteString("<b>" + telegramEscape(title) + "</b>\n")
 	if len(m.Items) == 0 {
 		return b.String(), 0
 	}
@@ -167,10 +170,24 @@ const telegramReservedRunes = 160
 // telegramBatchLine renders one entry of a digest (unescaped; the caller escapes
 // it uniformly).
 func telegramBatchLine(it Item, idx int, lim Limits) string {
+	if it.Kind == EventTaskStatusChanged {
+		return fmt.Sprintf("%d. %s: %s → %s", idx, telegramTaskTitle(it), StatusLabel(it.FromStatus), StatusLabel(it.ToStatus))
+	}
 	if a := assetLine(it.Assets, lim.AssetsShown); a != "" {
 		return fmt.Sprintf("%d. %s · %s — %s", idx, SeverityLabel(it.Severity), it.Title(), a)
 	}
 	return fmt.Sprintf("%d. %s · %s", idx, SeverityLabel(it.Severity), it.Title())
+}
+
+func telegramTaskTitle(it Item) string {
+	title := "Task status changed"
+	if it.TaskID > 0 {
+		title = fmt.Sprintf("Task #%d status changed", it.TaskID)
+	}
+	if name := OneLine(it.Name, 0); name != "" {
+		title += " · " + name
+	}
+	return title
 }
 
 // telegramBatchTitle renders the title line of a digest message. The count is
@@ -178,7 +195,14 @@ func telegramBatchLine(it Item, idx int, lim Limits) string {
 // total — otherwise readers would take the number in the header for the whole
 // batch.
 func telegramBatchTitle(m Message, items []Item, total int) string {
-	title := fmt.Sprintf("Vulnerability digest · %d total", total)
+	label := "Vulnerability digest"
+	for _, it := range m.Items {
+		if it.Kind == EventTaskStatusChanged {
+			label = "Notification digest"
+			break
+		}
+	}
+	title := fmt.Sprintf("%s · %d total", label, total)
 	if extra := total - len(items); extra > 0 {
 		title += fmt.Sprintf(" (showing the first %d, %d more in the next message)", len(items), extra)
 	}

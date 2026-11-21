@@ -222,8 +222,17 @@ func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, erro
 	r.s.syncTaskLLMState(pt)
 	t, _ := r.s.m.Task(r.taskID)
 	sel := taskLLMSelection{task: t, revision: pt.LLMChainRevision}
+	// windowGuarded refuses requests larger than the profile's window before any
+	// transport so streamTaskLLM/completeTaskLLM can advance the chain (or a Pool
+	// can pick a larger member) instead of surfacing a provider 400.
+	windowGuarded := func(prov llm.Provider, cfg agent.Config) llm.Provider {
+		if _, pooled := prov.(*llmpool.Pool); pooled {
+			return prov // pool members carry their own guards
+		}
+		return agent.NewBudgetGuard(prov, cfg.ContextWindowTokens())
+	}
 	if prov, cfg, id, ok := r.s.agentBindingProvider(r.agentKey); ok {
-		sel.provider, sel.retry = prov, cfg.Retry
+		sel.provider, sel.retry = windowGuarded(prov, cfg), cfg.Retry
 		sel.healthProfileID = healthIDFor(prov, id)
 		return sel, nil
 	}
@@ -244,7 +253,7 @@ func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, erro
 		if !ok {
 			return sel, fmt.Errorf("LLM profile #%d is missing or invalid", sel.profileID)
 		}
-		sel.provider, sel.retry = prov, cfg.Retry
+		sel.provider, sel.retry = windowGuarded(prov, cfg), cfg.Retry
 		sel.healthProfileID = sel.profileID // chain selections never go through the Pool
 		return sel, nil
 	}
@@ -252,10 +261,17 @@ func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, erro
 	if !ok {
 		return sel, fmt.Errorf("task %s has no available fallback LLM provider", r.taskID)
 	}
-	sel.provider, sel.retry = prov, cfg.Retry
+	sel.provider, sel.retry = windowGuarded(prov, cfg), cfg.Retry
 	sel.healthProfileID = healthIDFor(prov, id)
 	return sel, nil
 }
+
+// FailoverWindowFiltered tells the session-level noa budget guard installer that
+// window enforcement happens per selected profile inside current() (like the
+// failover Pool's per-member guards). Without it the session guard refuses on
+// the conservative compaction window before the runtime can advance the chain
+// to a larger-window profile.
+func (r *taskLLMRuntime) FailoverWindowFiltered() bool { return true }
 
 // activeCfg resolves the task's currently-active LLM config, mirroring current()'s
 // source precedence (agent binding → active chain profile → global). Read-only and
@@ -316,6 +332,12 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 		current: func(ctx context.Context) (taskLLMSelection, error) { return r.currentFor(ctx) },
 		recordHealth: func(ctx context.Context, profileID int64, stream, committed bool, err error) {
 			if profileID == 0 || r.s == nil || r.s.llmHealth == nil {
+				return
+			}
+			// Pre-transport window refusals never reach the provider: recording
+			// them as health failures makes the UI claim "quota exhausted" when
+			// the account still has credits. Chain advance already handles them.
+			if isContextOverflowError(err) {
 				return
 			}
 			if tripped, msg := r.s.llmHealth.RecordCall(ctx, profileID, stream, committed, err); tripped {
@@ -394,6 +416,21 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 		if callErr == nil {
 			resetLLMFailStreak(taskID, selection.profileID)
 			return msg, sr, total, nil
+		}
+		// Context overflow: this profile's window cannot hold the request — advance
+		// the chain immediately (see the streaming path) instead of surfacing.
+		if selection.profileID != 0 && isContextOverflowError(callErr) && ctx.Err() == nil {
+			transition, markErr := hooks.exhaust(selection, fmt.Errorf("profile #%d context window cannot fit the request: %w", selection.profileID, callErr))
+			if markErr != nil {
+				return llm.Message{}, "", total, fmt.Errorf("mark profile exhausted after %v: %w", callErr, markErr)
+			}
+			if transition.Advanced && !transition.Stale && hooks.transition != nil {
+				hooks.transition(selection, transition, callErr)
+			}
+			if !transition.Stale && transition.NextProfileID == nil {
+				return llm.Message{}, "", total, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
+			}
+			continue // replay the same logical request on the next profile
 		}
 		// Non-quota failures on a chain profile escalate after a consecutive
 		// streak (#99): same advance path as quota exhaust, truthful reason.
@@ -537,6 +574,24 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 				}
 				return
 			}
+			// Context overflow: this profile's window cannot hold the request, but
+			// whether another profile fits depends only on its window — advance the
+			// chain immediately instead of waiting out the failure streak.
+			if selection.profileID != 0 && !committed && isContextOverflowError(streamErr) && ctx.Err() == nil {
+				transition, markErr := hooks.exhaust(selection, fmt.Errorf("profile #%d context window cannot fit the request: %w", selection.profileID, streamErr))
+				if markErr != nil {
+					yield(llm.StreamEvent{}, fmt.Errorf("mark profile exhausted after %v: %w", streamErr, markErr))
+					return
+				}
+				if transition.Advanced && !transition.Stale && hooks.transition != nil {
+					hooks.transition(selection, transition, streamErr)
+				}
+				if !transition.Stale && transition.NextProfileID == nil {
+					yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: streamErr})
+					return
+				}
+				continue // nothing delivered — safe to replay on the next profile
+			}
 			// Non-quota failures on a chain profile escalate after a consecutive
 			// streak (#99), mirroring completeTaskLLM. Escalation only applies to
 			// uncommitted streams: once events reached the caller, replaying on a
@@ -648,10 +703,29 @@ func sameProviderRetryPolicy(r agent.RetryConfig) (retries int, backoff func(int
 	return retries, backoff
 }
 
+// isContextOverflowError reports a request that cannot fit the selected
+// profile's context window — refused pre-transport by the noa budget guard
+// (agent.ErrNoaBudget) or rejected by the provider with a length error.
+// Retrying the same profile is useless and whether another profile fits depends
+// only on its window, so the task chain must advance immediately instead of
+// surfacing the error after the failure streak.
+func isContextOverflowError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, agent.ErrNoaBudget) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "too long") || strings.Contains(s, "context length") ||
+		strings.Contains(s, "context_length") || strings.Contains(s, "maximum context") ||
+		strings.Contains(s, "status 413")
+}
+
 // isRetryableStreamError decides whether a "pre-commit stream failure" is worth replaying on the same provider.
 // Transient transport breaks / provider overload / rate limiting recover on their own and are safe to retry; these three are not:
 //   - quota exhausted: left to profile failover, don't burn retries here in vain
-//   - context too long: replaying the same request is useless; the harness's reactive compaction is the backstop
+//   - context overflow: replaying the same request is useless; advance the chain (see isContextOverflowError)
 //   - deterministic 4xx rejection (400/401/403/404/422): every provider would fail the same way
 func isRetryableStreamError(err error) bool {
 	if err == nil {
@@ -660,12 +734,10 @@ func isRetryableStreamError(err error) bool {
 	if isQuotaExhaustedError(err) {
 		return false
 	}
-	s := strings.ToLower(err.Error())
-	if strings.Contains(s, "too long") || strings.Contains(s, "context length") ||
-		strings.Contains(s, "context_length") || strings.Contains(s, "maximum context") ||
-		strings.Contains(s, "status 413") {
+	if isContextOverflowError(err) {
 		return false
 	}
+	s := strings.ToLower(err.Error())
 	for _, code := range []string{"status 400", "status 401", "status 403", "status 404", "status 422"} {
 		if strings.Contains(s, code) {
 			return false
@@ -677,7 +749,10 @@ func isRetryableStreamError(err error) bool {
 }
 
 // CompactionWindow mirrors current()'s precedence so the context window always
-// matches the provider the role will actually stream on.
+// matches the provider the role will actually stream on. The ACTIVE profile's
+// window — not the chain minimum: oversized-window members are protected by the
+// per-selection budget guards (current → windowGuarded), and a session-sized
+// minimum would refuse requests the active profile accepts.
 func (r *taskLLMRuntime) CompactionWindow() int {
 	if _, cfg, _, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		return cfg.CompactionWindow()
@@ -696,6 +771,13 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 		}
 		return (agent.Config{}).CompactionWindow()
 	}
+	if pt, err := r.s.m.pg.GetTask(taskNum); err == nil && pt != nil && pt.ActiveLLMProfileID != nil {
+		if cfg, ok := r.s.loadProfileConfig(*pt.ActiveLLMProfileID); ok {
+			return cfg.CompactionWindow()
+		}
+	}
+	// No active head (fresh chain, or everything exhausted): stay conservative so
+	// any ready member can serve the compacted session.
 	minimum := 0
 	for _, entry := range chain {
 		if cfg, ok := r.s.loadProfileConfig(entry.ProfileID); ok {
@@ -858,6 +940,26 @@ func (s *Server) syncTaskLLMState(pt *db.Task) {
 	s.m.mu.Unlock()
 }
 
+// llmTransitionReason labels why a chain profile was abandoned. The DB status
+// column is still quota_exhausted for historical reasons; the activity summary
+// and log must carry the true cause so operators don't top up credits when the
+// failure was a context window miss or a streak of deterministic 4xx errors.
+func llmTransitionReason(cause error) string {
+	if cause == nil {
+		return "quota exhausted"
+	}
+	if isContextOverflowError(cause) || strings.Contains(strings.ToLower(cause.Error()), "context window cannot fit") {
+		return "context window too small for the request"
+	}
+	if strings.Contains(cause.Error(), "consecutive calls") {
+		return "failed consecutive calls"
+	}
+	if isQuotaExhaustedError(cause) {
+		return "quota exhausted"
+	}
+	return "unusable"
+}
+
 func (s *Server) emitTaskLLMTransition(t *Task, transition db.TaskLLMTransition, cause error) {
 	if t == nil {
 		return
@@ -869,7 +971,7 @@ func (s *Server) emitTaskLLMTransition(t *Task, transition db.TaskLLMTransition,
 	}
 	mode := "automatic"
 	kind := "llm_switch"
-	summary := fmt.Sprintf("%s quota exhausted", llmAuditProfileLabel(previous))
+	summary := fmt.Sprintf("%s %s", llmAuditProfileLabel(previous), llmTransitionReason(cause))
 	if transition.NextProfileID != nil {
 		summary += fmt.Sprintf(", subsequent calls switched to %s", llmAuditProfileLabel(next))
 	} else {

@@ -90,6 +90,35 @@ func irreducibleRequest() llm.CompletionRequest {
 	return llm.CompletionRequest{System: []string{strings.Repeat("protected system prompt ", 8000)}, MaxTokens: 8000}
 }
 
+// windowFilteredProvider mimics llmpool.Pool: it filters members by window
+// itself, so enableNoa must not install the head-window budget guard on top.
+type windowFilteredProvider struct{ llm.Provider }
+
+func (windowFilteredProvider) FailoverWindowFiltered() bool { return true }
+
+func TestEnableNoaSkipsBudgetGuardForWindowFilteredPool(t *testing.T) {
+	inner := windowFilteredProvider{&countingProvider{}}
+	opts := &agentcore.Options{Compaction: compactionConfig(32000)}
+	opts.Provider = inner
+	enableNoa(opts, func() bool { return true }, t.TempDir(), "noa-pool", nil)
+
+	if _, wrapped := opts.Provider.(*noaBudgetProvider); wrapped {
+		t.Fatalf("installed a budget guard on top of a window-filtered pool; the pool's per-member guard must own window enforcement")
+	}
+	if opts.Compaction != nil || opts.Compactor == nil {
+		t.Fatalf("Compaction=%v Compactor=%v; noa must still replace the built-in compaction", opts.Compaction, opts.Compactor)
+	}
+}
+
+func TestNewBudgetGuardRefusesOverWindowBeforeTransport(t *testing.T) {
+	inner := &countingProvider{}
+	p := NewBudgetGuard(inner, 32000)
+	_, _, _, err := p.Complete(t.Context(), irreducibleRequest())
+	if err == nil || !errors.Is(err, ErrNoaBudget) || inner.calls != 0 {
+		t.Fatalf("err=%v calls=%d, want ErrNoaBudget without a provider call", err, inner.calls)
+	}
+}
+
 func TestNoaBudgetRefusesIrreducibleRequestBeforeTransport(t *testing.T) {
 	t.Run("atomic", func(t *testing.T) {
 		inner := &countingProvider{}

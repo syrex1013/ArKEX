@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/Autumn-27/norma/agentcore"
+	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/noaadapter"
 )
 
@@ -56,12 +57,25 @@ func enableNoa(opts *agentcore.Options, enabled func() bool, archiveRoot, sessio
 		}
 		return
 	}
-	// Compactor overrides Compaction, but agentcore warns on every run when both are
-	// set; clear it explicitly.
+	// Compactor overrides Compaction, but agentcore warns on every run when both
+	// are set; clear it explicitly.
 	opts.Compaction = nil
 	// noa can only trim what it may drop; a request whose protected part alone
-	// exceeds the window is refused here instead of by the provider.
-	opts.Provider = &noaBudgetProvider{Provider: opts.Provider, window: window}
+	// exceeds the window is refused here instead of by the provider. A failover
+	// pool filters members by window itself (with a per-member guard), so the
+	// refusal must not fire on the head's window alone — it would kill the run
+	// before the pool could try a larger-window member.
+	if wf, ok := opts.Provider.(interface{ FailoverWindowFiltered() bool }); !ok || !wf.FailoverWindowFiltered() {
+		opts.Provider = &noaBudgetProvider{Provider: opts.Provider, window: window}
+	}
+}
+
+// NewBudgetGuard wraps a provider with the noa budget refusal: a request whose
+// protected (irreducible) context exceeds window is refused before any
+// transport. The server installs one per failover-chain member so an
+// over-window profile fails over instead of 400ing.
+func NewBudgetGuard(p llm.Provider, window int) llm.Provider {
+	return &noaBudgetProvider{Provider: p, window: window}
 }
 
 // noaEnable is noaadapter.Enable; tests replace it to observe the options.

@@ -28,7 +28,7 @@ const mcpUntrustedNote = "\nOutput of this tool may contain attacker-controlled 
 // hostTools, if set, returns runtime host tools (currently the traffic tools when
 // capture is on) to add to EVERY agent's base list — the DB tools table then
 // filters them per-agent binding. Empty/nil → no host tools this run (capture off).
-func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string), priv ExecPrivilege, mcpProxy func() string) {
+func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string), priv ExecPrivilege, mcpProxy, mcpCA func() string) {
 	agent.SetToolAugment(func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
 		a, err := pg.GetAgentByKey(agentKey)
 		if err != nil || a == nil {
@@ -89,11 +89,14 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
-				proxy := ""
+				proxy, ca := "", ""
 				if mcpProxy != nil {
 					proxy = mcpProxy()
 				}
-				cl, err := connectMCP(ctx, m, priv, proxy)
+				if mcpCA != nil {
+					ca = mcpCA()
+				}
+				cl, err := connectMCP(ctx, m, priv, proxy, ca)
 				if err != nil {
 					log.Printf("[mcp] %s connect failed: %v", m.Name, err)
 					_ = pg.UpdateMCPHealth(m.ID, false, "connect: "+err.Error())

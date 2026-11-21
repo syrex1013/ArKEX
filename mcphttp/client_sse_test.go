@@ -90,7 +90,7 @@ func TestLegacySSEClientDiscoverAndCall(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := NewSSE(ctx, "test", srv.URL+"/sse", map[string]string{"Authorization ": "Bearer test"}, false, "")
+	c, err := NewSSE(ctx, "test", srv.URL+"/sse", map[string]string{"Authorization ": "Bearer test"}, false, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestLegacySSERefusesCrossOriginEndpoint(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := NewSSE(ctx, "test", srv.URL+"/sse", nil, false, ""); err == nil {
+	if _, err := NewSSE(ctx, "test", srv.URL+"/sse", nil, false, "", ""); err == nil {
 		t.Fatal("cross-origin SSE endpoint accepted")
 	}
 }

@@ -36,6 +36,26 @@ import (
 // receiver got, what state the delivery rows landed in), not function return
 // values — this is closer to the real call path than stubbing return values.
 
+func TestNotificationTaskStatusSnapshot(t *testing.T) {
+	delivery := &db.NotificationDelivery{
+		EventKind: notify.EventTaskStatusChanged,
+		Snapshot:  json.RawMessage(`{"task_id":42,"name":"","task":"","from_status":"paused","to_status":"created"}`),
+	}
+	snap, err := parseSnapshot(delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := (&Notifier{}).itemFor(context.Background(), snap, "https://example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Kind != notify.EventTaskStatusChanged || item.TaskID != 42 ||
+		item.FromStatus != "paused" || item.ToStatus != "created" ||
+		item.DetailURL != "https://example.com/function/tasks/detail?id=42" {
+		t.Fatalf("unexpected task notification item: %+v", item)
+	}
+}
+
 // notifyFixture is the shared fixture for the cases in this file.
 type notifyFixture struct {
 	s       *Server

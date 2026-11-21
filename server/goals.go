@@ -132,13 +132,13 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 		if isTerminalStatus(lifecycle.Status) {
 			return false, fmt.Errorf("a terminal task cannot be resumed")
 		}
-		if !lifecycle.Paused {
+		if !lifecycle.Paused && lifecycle.Status != "paused" {
 			return false, fmt.Errorf("only a paused task can be resumed")
 		}
 		mode = s.resumeAdmissionMode(t)
 	}
 	wasTerminal := isTerminalStatus(lifecycle.Status)
-	wasPaused := lifecycle.Paused || s.engine.IsPaused(t.ID)
+	wasPaused := lifecycle.Paused || lifecycle.Status == "paused" || s.engine.IsPaused(t.ID)
 	wasQueued := lifecycle.Queued
 	engineWasPaused := s.engine.IsPaused(t.ID)
 	enabled, limit := s.m.ConcurrencyLimit()
@@ -151,7 +151,9 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	// status: a concurrent terminal transition must win instead of being silently
 	// reported as a successful follow-up admission.
 	if !wasTerminal && !wasPaused && !wasQueued && s.engine.Started(t.ID) && (!enabled || ready) {
-		if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, lifecycle.Status, false, "resume", false); err != nil {
+		// Normalize lifecycle to running even when the Engine was already live:
+		// status can lag behind (created/paused) after restarts or partial pauses.
+		if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, "running", false, "resume", false); err != nil {
 			return false, err
 		}
 		s.startAdmittedTask(t, "resume")
@@ -181,10 +183,10 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 			"the task is waiting on the concurrency queue or for its admission status to commit; this execution has stopped, and intents are claimed again only once it holds a run slot"))
 	}
 
-	status := lifecycle.Status
-	if wasTerminal {
-		status = "running"
-	}
+	// Always land a live admission in running (or keep a non-paused created task
+	// progressing as running). Leaving status=paused/created while the Engine is
+	// live makes the UI look stuck even though workers are still claiming work.
+	status := "running"
 	if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, status, shouldQueue, mode, wasQueued); err != nil {
 		if !engineWasPaused && !wasPaused && !wasQueued {
 			s.engine.Resume(t)

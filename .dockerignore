@@ -2,6 +2,8 @@
 **/node_modules
 web/.next
 web/out
+web/dist
+/dist
 server/webui/dist
 /artex
 data
@@ -19,3 +21,9 @@ bench/.env
 bench/scheduler.py
 bench/entrypoint_v2.sh
 bench/seed_v2.sh
+_artex_baseline
+_arkex_preserve
+poc
+submission_review
+*.log
+*.md

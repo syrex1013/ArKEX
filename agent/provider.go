@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/egress"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
@@ -536,6 +537,10 @@ func requestBodySnapshot(req *http.Request) string {
 
 func quotaAwareHTTPClient(proxy, sessionHeaderKey, userAgent string) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// LLM traffic is control-plane: never inherit task HTTP_PROXY, and mark the
+	// socket so kernel Mullvad (wgkernel kill-switch) steers it out the host
+	// gateway instead of the tunnel. Task tools keep the unmarked path.
+	transport.DialContext = egress.ControlPlaneDialer().DialContext
 	proxy = strings.TrimSpace(proxy)
 	if proxy == "" {
 		transport.Proxy = nil // empty = direct; no fallback to the HTTP_PROXY/HTTPS_PROXY env vars
