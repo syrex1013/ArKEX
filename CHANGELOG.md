@@ -51,6 +51,10 @@ All notable changes to this project are documented in this file. The format is b
 - **CI**: the suite also runs on the latest Go release as an advisory job, the rewrite-rule engine runs under the race detector, and the gzip/compression fixtures no longer depend on the local Go version (#279, #278).
 - **Repository hygiene** (#275): `docs/` is no longer ignored, and contributing documents the 7-open-pull-request cap (#307).
 
+### Added
+
+- **Professional engagement template set (0017)**: twelve seeded task templates — external and internal infrastructure, Active Directory, API, cloud, mobile, container/Kubernetes escape, wireless, phishing/social engineering, OSINT recon, source-code audit, and full-scope red team. Idempotent seed; operator-edited templates are never overwritten.
+
 ### Fixed
 
 - **Task scope add returns the stored id**: `POST /api/tasks/{id}/scope` echoed `id: 0` because the idempotent upsert kept no id, so a client that deletes the row it just added had to re-list first. The response now carries the persisted row id, the same one a duplicate add returns.
