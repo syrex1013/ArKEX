@@ -104,6 +104,10 @@ func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error
 // yet (notably the seeded browser MCP on first run). Runs sequentially in one
 // goroutine so we never spawn many stdio servers at once, and never blocks
 // startup. Best-effort: a failure leaves the cache empty to retry next start.
+//
+// Agent assembly may connect the same server and populate the cache first; if so
+// we skip, and a race that still fails after the cache is full is treated as
+// success so it does not look like a real outage in server_logs.
 func (s *Server) discoverEmptyMCPsOnStartup() {
 	servers, err := s.m.pg.ListMCP()
 	if err != nil {
@@ -114,10 +118,19 @@ func (s *Server) discoverEmptyMCPsOnStartup() {
 		if !m.Enabled || len(m.Tools) > 0 {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(s.ctx, 90*time.Second)
-		if err := s.discoverAndCacheMCP(ctx, m); err != nil {
-			log.Printf("[mcp] startup auto-discovery of %s failed: %v", m.Name, err)
+		// Another path (agent assemble / refresh) may have filled the cache since ListMCP.
+		if names, _ := s.m.pg.MCPToolNames(m.ID); len(names) > 0 {
+			continue
 		}
+		ctx, cancel := context.WithTimeout(s.ctx, 90*time.Second)
+		err := s.discoverAndCacheMCP(ctx, m)
 		cancel()
+		if err == nil {
+			continue
+		}
+		if names, _ := s.m.pg.MCPToolNames(m.ID); len(names) > 0 {
+			continue // raced a successful connect; cache is warm
+		}
+		log.Printf("[mcp] startup auto-discovery of %s failed: %v", m.Name, err)
 	}
 }
