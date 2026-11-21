@@ -79,6 +79,14 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 // given to no agent by default; bind it manually when needed.
 var defaultUnbound = map[string]bool{"goal_met": true}
 
+// unseededTools are runtime-wired host tools that never enter the manage-tool
+// catalog: they are appended to the worker's base set only when the server
+// wires their backend, and the target gate must keep scanning them (the
+// desync/fuzz targets are real network connections, not platform records).
+var unseededTools = map[string]bool{
+	"desync_probe": true, "index_cpg_sinks": true, "list_cpg_sinks": true, "launch_fuzz": true,
+}
+
 // BuiltinToolSeeds dedupes and merges each agent's built-in tool set into the seed
 // list: tools with the same name (e.g. list_assets, which several agents have)
 // merge into one record, with Agents as the union; tools in defaultUnbound are
@@ -95,6 +103,9 @@ func BuiltinToolSeeds() []ToolSeed {
 	var keys []string
 	for _, ak := range order {
 		for _, t := range byAgent[ak] {
+			if unseededTools[t.Name()] {
+				continue
+			}
 			a, ok := m[t.Name()]
 			if !ok {
 				a = &acc{tool: t}

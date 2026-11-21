@@ -163,6 +163,10 @@ type ToolSet struct {
 	// killWork, if set, terminates a running work by intent id (engine callback,
 	// wired by the planner). nil = the kill_work tool reports unavailable.
 	killWork func(intentID int64) error
+	// lab, if set, exposes the host's offensive lab techniques (desync probing,
+	// CPG/taint indexing, fuzzing) to agents. nil = those tools report
+	// unavailable.
+	lab LabTechniques
 	// steerWork, if set, queues a mid-run course-correction for the work running an
 	// intent id (engine callback, wired by the planner): the worker injects it before
 	// its next tool call and re-plans, without being killed. nil = tool unavailable.

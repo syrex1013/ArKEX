@@ -283,14 +283,6 @@ export const api = {
       saved_bytes: number;
     }>("/system/storage"),
 
-  labDesync: (url: string, task_id?: string) =>
-    post<{ results: Array<Record<string, unknown>> }>("/lab/desync", { url, task_id }),
-  labCPGIndex: (path: string, task_id: string, language: string) =>
-    post<{ sinks: Array<Record<string, unknown>>; count: number }>("/lab/cpg/index", { path, task_id, language }),
-  labCPGSinks: (task: string) =>
-    get<{ sinks: Array<Record<string, unknown>> }>(`/lab/cpg/sinks?task=${encodeURIComponent(task)}`),
-  labFuzz: (body: { task_id: string; kind: string; target: string; target_kind?: string }) =>
-    post<{ job_id: number }>("/lab/fuzz", body),
   oastPayload: (tag: string, task_id: string, intent_id?: string) =>
     post<{ payload: string; domain: string }>("/oast/payload", { tag, task_id, intent_id }),
   oastCallbacks: (task?: string) =>

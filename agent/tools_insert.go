@@ -705,6 +705,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// get_worker_trace: once a work is locked, list steps / search in place / fetch
 		// full content.
 		t.searchAllWorkerTraces(), t.getWorkerTrace(),
+		// Lab techniques (desync probing, CPG/taint indexing, fuzzing): wired by
+		// the server; each tool refuses with a clear message when unset.
+		t.desyncProbeTool(), t.cpgIndexTool(), t.cpgSinksTool(), t.fuzzTool(),
 		// node_detail: once a worker has an intent_id/node id, it can look up that node's
 		// full detail (pairs with the review above).
 		t.nodeDetail(),

@@ -62,6 +62,7 @@ type WebSearchOpts struct {
 
 type Worker struct {
 	findingRecorder FindingRecorder
+	lab             LabTechniques // host lab techniques for the worker's tools (nil = unavailable)
 	prov            llm.Provider
 	model           string
 	workDir         string
@@ -158,6 +159,10 @@ func (w *Worker) SetLessonsBlock(block string) { w.lessonsBlock = block }
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (w *Worker) wantConstraints() bool { return w.injectConstraints == nil || w.injectConstraints() }
+
+// SetLab wires the host's offensive lab techniques (desync probing, CPG/taint
+// indexing, fuzzing) so the worker can invoke them directly. nil = unavailable.
+func (w *Worker) SetLab(l LabTechniques) { w.lab = l }
 
 // SetRunTimeout configures the per-intent wall-clock budget for the main
 // exploration (0 = unlimited). When it fires, the SDK settlement phase still runs
@@ -482,6 +487,7 @@ func (w *Worker) ExecuteWithMessage(ctx context.Context, name string, taskID int
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (harness.TerminalReason, WriteCounts, error) {
 	tsx := NewToolSet(ts, name)
 	tsx.SetFindingRecorder(w.findingRecorder)
+	tsx.SetLab(w.lab) // host lab techniques (desync/CPG/fuzz); nil = unavailable
 	tsx.SetTaskID(taskID)
 	coverageEnabled := coverageOn(as, taskID)
 	tsx.SetCoverageEnabled(coverageEnabled)

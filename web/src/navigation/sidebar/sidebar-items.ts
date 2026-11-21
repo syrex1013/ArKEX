@@ -90,9 +90,6 @@ export const sidebarItems: NavGroup[] = [
     id: 2,
     label: t("Lab"),
     items: [
-      { id: "lab-desync", title: t("H2 Desync"), url: "/lab/desync", icon: Activity },
-      { id: "lab-cpg", title: t("CPG / Taint"), url: "/lab/cpg", icon: Terminal },
-      { id: "lab-fuzzer", title: t("Fuzzer"), url: "/lab/fuzzer", icon: Zap },
       { id: "lab-oast", title: t("OAST"), url: "/lab/oast", icon: Radio },
       { id: "lab-sliver", title: t("Sliver C2"), url: "/lab/sliver", icon: Crosshair },
       { id: "lab-mullvad", title: t("Mullvad VPN"), url: "/lab/mullvad", icon: Shield },

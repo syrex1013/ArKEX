@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useState } from "react";
 
-import { Activity, Radio, ShieldAlert, Target, Terminal, Zap } from "lucide-react";
+import { Radio, ShieldAlert, Target } from "lucide-react";
 
 import { CornerFrame } from "@/components/threatvector/corner-frame";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,24 +14,6 @@ export default function LabPage() {
   const [taskId, setTaskId] = useState("");
 
   const tools = [
-    {
-      title: "H2 Desync",
-      description: "CL.TE / TE.CL / H2.CL / H2.TE / pipelined race probes",
-      href: "/lab/desync",
-      icon: Activity,
-    },
-    {
-      title: "CPG / Taint",
-      description: "Code Property Graph sink indexer over harvested source",
-      href: "/lab/cpg",
-      icon: Terminal,
-    },
-    {
-      title: "AFL++ / Fuzzer",
-      description: "Hybrid fuzz job launcher with Docker integration",
-      href: "/lab/fuzzer",
-      icon: Zap,
-    },
     {
       title: "OAST",
       description: "Out-of-band application security testing payloads (S3 receipts)",
@@ -58,7 +40,8 @@ export default function LabPage() {
         <div className="border-b-2 border-primary pb-3">
           <h1 className="text-[1.25rem] font-medium tracking-tight">0-Day & Protocol Lab</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            ArKex upgrade surface: CPG sinks, hybrid fuzz jobs, H2 desync probes, OAST payloads.
+            Infrastructure and monitoring: OAST payloads, Sliver C2, egress VPN. Attack techniques (desync probes,
+            CPG/taint, fuzzing) run through the agents' desync_probe / index_cpg_sinks / launch_fuzz tools.
           </p>
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">

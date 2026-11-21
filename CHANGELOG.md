@@ -53,6 +53,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **Lab techniques as agent tools**: the operator-run lab pages (H2 Desync, CPG/Taint, Fuzzer) are gone; workers now carry `desync_probe`, `index_cpg_sinks`, `list_cpg_sinks` and `launch_fuzz` and invoke the same backends mid-intent. The desync/fuzz targets stay under the target gate (scanned, approval required); the CPG path for agents must stay inside the data directory. The catalog (manage-tool UI) does not list them: runtime-wired only.
 - **Professional engagement template set (0017)**: twelve seeded task templates — external and internal infrastructure, Active Directory, API, cloud, mobile, container/Kubernetes escape, wireless, phishing/social engineering, OSINT recon, source-code audit, and full-scope red team. Idempotent seed; operator-edited templates are never overwritten.
 
 ### Fixed

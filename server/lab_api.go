@@ -2,7 +2,6 @@ package server
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/offensive/authmatrix"
-	"github.com/Autumn-27/artex/offensive/desync"
 	"github.com/Autumn-27/artex/offensive/oast"
 	"github.com/Autumn-27/artex/offensive/zeroday"
 )
@@ -59,16 +57,10 @@ func (s *Server) labDesync(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "url must be http(s)")
 		return
 	}
-	eng := desync.New()
-	results, err := eng.ProbeAll(r.Context(), req.URL)
+	results, err := s.desyncProbe(r.Context(), req.URL, req.TaskID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
-	}
-	if s.m != nil && s.m.pg != nil {
-		raw, _ := json.Marshal(results)
-		_, _ = s.m.pg.Exec(`INSERT INTO lab_desync_runs (task_id, target_url, results) VALUES ($1,$2,$3::jsonb)`,
-			req.TaskID, req.URL, string(raw))
 	}
 	writeJSON(w, 200, map[string]any{"results": results})
 }
