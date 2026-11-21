@@ -872,12 +872,17 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 	}
 }
 
+// minPlanHeartbeat is the floor plannerHeartbeatInterval applies. A variable so a
+// test can shrink it: the real floor is ten minutes, far beyond any test window.
+var minPlanHeartbeat = db.MinPlanHeartbeatSeconds
+
 // plannerHeartbeatInterval parses a task's planner heartbeat interval.
-// db.CreateTask already normalizes it (anything below 600 is raised to 600); this is one more safety net against abnormal in-memory values.
+// db.CreateTask already normalizes it (anything below the floor is raised); this
+// is one more safety net against abnormal in-memory values.
 func plannerHeartbeatInterval(t *Task) time.Duration {
 	sec := t.PlanHeartbeatSeconds
-	if sec < db.MinPlanHeartbeatSeconds { // floor = default = 600 (10min)
-		sec = db.MinPlanHeartbeatSeconds
+	if sec < minPlanHeartbeat {
+		sec = minPlanHeartbeat
 	}
 	return time.Duration(sec) * time.Second
 }
@@ -930,8 +935,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	heartbeat := time.NewTimer(interval)
 	defer heartbeat.Stop()
 
-	// runRound runs one planning round (with debounce coalescing + the guards). src is only used to tell the trigger source apart in logs.
-	runRound := func(src string) {
+	// runRound runs one planning round (with debounce coalescing + the guards) and
+	// reports whether it actually reached planner.Plan. A guard or quiet-skip that
+	// returns early did not plan, and the heartbeat must not be pushed out on it:
+	// see the re-arm below. src is only used to tell the trigger source apart in logs.
+	runRound := func(src string) (planned bool) {
 		// debounce: coalesce a burst of changes into one planning round
 		timer := time.NewTimer(e.debounce)
 	drain:
@@ -944,24 +952,24 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		}
 		planner, _ := e.snapshotFor(t)
 		if planner == nil {
-			return // idle until LLM configured
+			return false // idle until LLM configured
 		}
 		if e.IsPaused(t.ID) {
-			return // user-paused: don't plan
+			return false // user-paused: don't plan
 		}
 		if e.IsDeleting(t.ID) {
-			return
+			return false
 		}
 		// terminal task (goals all met → done, or failed): the run is over. A
 		// resume/nudge — e.g. auto-resume of the active task on restart — must NOT
 		// re-plan (it would burn an LLM round and re-confirm a settled result).
 		if isTerminalStatus(t.lifecycleSnapshot().Status) {
-			return
+			return false
 		}
 		// Task-level timeout settlement in progress: drop ordinary wake-ups — neither
 		// worker settlement write-backs nor Resume's Notify trigger regular planning rounds; the final round is driven directly by the coordinator (settleTask), not here.
 		if e.isSettling(t.ID) {
-			return
+			return false
 		}
 		// goalless (human direct-inject) branch: when the task has no open goals the
 		// planner does not run — running it would re-judge met→cancelExec and kill intents
@@ -979,12 +987,12 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 						Summary: "All goals have been met, the direct-injected intents have finished executing, and the task is over"})
 				}
 			}
-			return // the goalless branch never enters planner.Plan
+			return false // the goalless branch never enters planner.Plan
 		}
 		// Run budget (off by default): no worker affordable any more → the forced
 		// wrap-up (once) instead of a normal round.
 		if e.budgetStop(ctx, t) {
-			return
+			return false
 		}
 		// quiet-mode (#79): an edge round is redundant while work is in flight
 		// and the open-goal set is unchanged since the last completed round —
@@ -995,10 +1003,10 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if src == "edge" && t.PlanQuietMode && e.quietSkipEdge(t) {
 			t.drainTriggers()
 			log.Printf("[planner] task %s quiet: work in flight, goals unchanged, edge round skipped", t.ID)
-			return
+			return false
 		}
 		if !e.beginTaskOperation(t.ID) {
-			return
+			return false
 		}
 		defer e.decInflight(t.ID)
 		e.stampFirstRun(t) // first real planning round → stamp first_run_at + compute the deadline (only for tasks with a timeout)
@@ -1006,7 +1014,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		emit := func(r db.Activity) { e.emitActivity(t, r) }
 		ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; carries the task deadline
 		if ectx.Err() != nil || e.IsDeleting(t.ID) {
-			return
+			return false
 		}
 		log.Printf("[planner] task %s planning… (trigger: %s)", t.ID, src)
 		// round marker: each Plan() is one planner round; emit a boundary so the
@@ -1047,20 +1055,28 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			t.Notify() // this round crossed the budget: settle on the next round, not at the next heartbeat
 		}
 		e.touch(t.ID)
+		return true
 	}
 
 	for {
+		var planned bool
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.notify:
-			runRound("edge") // worker finish / finding / kill / resume / seed first round
+			planned = runRound("edge") // worker finish / finding / kill / resume / seed first round
 		case <-heartbeat.C:
 			// Periodic safety net: deadlock fallback + wake up to supervise in-flight workers (steer/kill) + periodic recheck.
-			runRound("heartbeat")
+			planned = runRound("heartbeat")
 		}
-		// Re-arm the heartbeat after every wake-up (edge or heartbeat): any planning trigger restarts this idle timer.
-		resetPlannerTimer(heartbeat, interval)
+		// Re-arm the heartbeat after a wake-up that planned: a planning trigger
+		// restarts this idle timer. A wake-up that did NOT plan (guard hit, quiet
+		// skip, no planner yet) leaves the running timer alone — re-arming it there
+		// would push the safety-net round out by a full interval every time an edge
+		// lands, and a busy task whose edges all quiet-skip would never reach one.
+		if planned {
+			resetPlannerTimer(heartbeat, interval)
+		}
 	}
 }
 
