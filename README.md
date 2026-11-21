@@ -3,7 +3,7 @@
 <img src="assets/readme/hero.svg" width="100%" alt="ArKex — autonomous penetration testing that keeps its receipts: planner, workers, dual graphs, evidence-bound findings" />
 
 [![Release](https://img.shields.io/github/v/release/syrex1013/ArKEX?label=release&color=6b34db)](https://github.com/syrex1013/ArKEX/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-6b34db)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/github/license/syrex1013/ArKEX?color=6b34db)](LICENSE)
 [![CI](https://github.com/syrex1013/ArKEX/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/syrex1013/ArKEX/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.27-6b34db)](go.mod)
 [![Sponsor](https://img.shields.io/badge/sponsor-syrex1013-6b34db?logo=github)](https://github.com/sponsors/syrex1013)
@@ -802,10 +802,14 @@ This repository is the English translation and continuation of ARTEX, originally
 
 ### Open source license
 
-This project is licensed under the **MIT License**; see the [LICENSE](LICENSE) file for the full terms.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**; see the
+[LICENSE](LICENSE) file for the full terms.
 
-> **Lineage note**: this project is a continuation of ARTEX by [Autumn-27](https://github.com/Autumn-27),
-> whose code was released under AGPL-3.0.
+This project is a continuation of ARTEX by [Autumn-27](https://github.com/Autumn-27), whose code was
+released under AGPL-3.0, so the combined work stays under AGPL-3.0. Anyone may use, modify and
+distribute it, but **derivative works must also be open-sourced under AGPL-3.0**; in particular, **if
+you modify this project and provide it to users over a network (for example as an online service),
+you must make the corresponding complete source code available to those users**.
 
 > **Important**: the open source license does not restrict how the software is used. The usage
 > restrictions and disclaimer below are additional terms from the maintainers.
