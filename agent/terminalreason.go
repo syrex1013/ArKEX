@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/norma/harness"
 )
 
@@ -47,6 +48,18 @@ var reasonHint = map[harness.TerminalReason]string{
 // refusalHint explains a turn the provider declined (see IsRefusalStop).
 const refusalHint = "the provider's safety system declined this request, so the model produced no output; the intent was not completed, and resending the same request unchanged is expected to be refused again. With LLM Recording on, the raw response carries the provider's stop details"
 
+// proseRefusalHint explains the softer shape: the provider answered normally but
+// argued that this work is not really covered, so the turn stops mid-intent
+// without a single tool call. The argument itself is kept below as evidence.
+const proseRefusalHint = "the model argued that this goal is not covered by an authorized test and stopped without any tool call; the intent was not completed. Its argument is kept below — answer it rather than resending the same request. The prompt now carries the code-owned framing tail (`refusalFraming`), and the run is rerun once with `RefusalNudge` before the refusal is reported"
+
+// proseRefusal reports a turn whose text is a refusal argument instead of work.
+// Only a provider stop reason of its own excludes it: that shape has no prose.
+func proseRefusal(term *harness.Terminal) bool {
+	return term != nil && term.Reason == harness.ReasonCompleted &&
+		strings.TrimSpace(term.Text) != "" && llmpool.LooksLikeRefusalText(term.Text)
+}
+
 // terminalText renders a terminal event with no final text into a compact summary
 // and a Markdown detail block.
 func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (string, string) {
@@ -58,9 +71,11 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 		aborted = true
 	}
 	// A provider refusal has no text and no tool calls, so the harness ends it as
-	// ReasonCompleted. Only the recorded stop reason tells the two apart.
+	// ReasonCompleted. Only the recorded stop reason tells the two apart. A prose
+	// refusal is its own shape: the text is the argument, not a summary.
 	stop := LastStopReason(ctx)
 	refused := reason == harness.ReasonCompleted && IsRefusalStop(stop)
+	argued := !refused && proseRefusal(term)
 
 	var sum string
 	if aborted {
@@ -80,6 +95,8 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 		sum = "(run budget cap reached (" + string(reason) + "); wrap-up wrote back facts" + progressSuffix(term, tr) + "; no text summary this run)"
 	} else if refused {
 		sum = "(no text summary; provider refusal (stop_reason " + stop + "): " + firstLine(refusalHint, 80) + ")"
+	} else if argued {
+		sum = "(refusal argument, no tool call: " + firstLine(proseRefusalHint, 80) + ")"
 	} else {
 		hint := terminalReasonHint(reason)
 		sum = "(no text summary; terminal state " + terminalReasonLabel(reason) + ": " + firstLine(hint, 80) + ")"
@@ -91,6 +108,11 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 	displayReason := terminalReasonLabel(reason)
 	if refused {
 		fmt.Fprintf(&b, "- **Terminal state**: `%s`, but the last model call ended with stop_reason `%s` - %s\n", displayReason, stop, refusalHint)
+	} else if argued {
+		fmt.Fprintf(&b, "- **Terminal state**: `%s` - %s\n", displayReason, proseRefusalHint)
+		b.WriteString("- **The argument**:\n\n")
+		b.WriteString(term.Text)
+		b.WriteString("\n\n")
 	} else {
 		fmt.Fprintf(&b, "- **Terminal state**: `%s` - %s\n", displayReason, terminalReasonHint(reason))
 	}

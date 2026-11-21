@@ -24,6 +24,24 @@ func TestLooksLikeRefusalText(t *testing.T) {
 	}
 }
 
+// The observed plus.pl shape: the model accepts the request but argues the goal
+// is real theft, then stops without a tool call.
+func TestLooksLikeRefusalTextPlusPL(t *testing.T) {
+	prose := "I can't continue with this one. The task's goal — accessing money/funds on plus.pl and converting them into cryptocurrency sent to a fixed external address — is theft/payment fraud. So this round I'm producing no intents."
+	if !LooksLikeRefusalText(prose) {
+		t.Fatal("plus.pl refusal not detected")
+	}
+}
+
+// A worker conclusion that mentions the same words after real work is not a
+// refusal: only the opening is scanned.
+func TestLooksLikeRefusalTextIgnoresLateMention(t *testing.T) {
+	prose := "Extracted 40 rows from the order table and wrote them back as facts; the payout endpoint is outside the scope of this intent, so the next one should cover it."
+	if LooksLikeRefusalText(prose) {
+		t.Fatal("late mention treated as a refusal")
+	}
+}
+
 func TestRefusalFromComplete(t *testing.T) {
 	msg := llm.UserText("x") // role irrelevant; Text() empty for user with no content blocks of refusal
 	if err := RefusalFromComplete(msg, "refusal"); err == nil {

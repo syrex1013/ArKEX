@@ -654,10 +654,14 @@ func (h steerHooks) PostToolUse(ctx context.Context, name string, input, result 
 	}
 }
 
-// Stop adds an "idle turn" rerun layer on top of guard's existing semantics: when
-// the model emitted only thinking — neither body text nor tool calls — the harness
-// treats it as a natural end and finishes with an empty summary (ReasonCompleted +
-// asst.Text() in query.go), leaving an unfinished intent stranded mid-way. Inject a rerun instruction here so the model continues with the thinking it already produced.
+// Stop adds an "idle turn" rerun layer on top of the guard's existing semantics:
+// when the model emitted only thinking — neither body text nor tool calls — the
+// harness treats it as a natural end and finishes with an empty summary
+// (ReasonCompleted + asst.Text() in query.go), leaving an unfinished intent
+// stranded mid-way. Inject a rerun instruction here so the model continues with
+// the thinking it already produced. Prose refusals are the sibling layer and sit
+// outside the guard wrapper (agent.RefusalRerun), because they must not depend on
+// how the Guard is configured.
 func (h steerHooks) Stop(ctx context.Context, messages []llm.Message) (bool, []string, string) {
 	var (
 		prevent  bool

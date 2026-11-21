@@ -131,6 +131,7 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	// {{.EngagementDescription}} template var — else a prompt that references the var
 	// would inject the description twice. System prompt stays pure static instructions.
 	sys := renderSystem("goals", goalsDefaultTmpl, GoalsVars{DataDir: dataDir, Now: nowStr()})
+	sys += refusalFramingTail()
 	// set_constraints is always available (it does not depend on the asset store): the body
 	// already contains the "extract operation constraints before decomposing goals" step
 	// (wording editable on the agent edit page); here we only need to wire the tool.
@@ -158,6 +159,7 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 		Provider:               prov,
 		SystemPrompt:           []string{sys},
 		Tools:                  tools,
+		Hooks:                  WithRefusalRerun(nil), // refusal here means no goals at all, so rerun it
 		PermissionMode:         acperm.ModeBypass,
 		DisableBackgroundTasks: true,
 		// 3 steps (extract constraints → register scope → decompose goals) each need one tool call; give enough turns so set_goals is not missed before wrap-up.

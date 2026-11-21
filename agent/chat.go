@@ -90,7 +90,7 @@ func chatWorkDirSpec(workDir string) string {
 // after the editable body.
 func chatSystem(agentKey, dataDir, workDir string) string {
 	body := renderSystem(agentKey, DefaultAssistantPrompt, chatVars{DataDir: dataDir, Now: nowStr()})
-	body += untrustedContentTail(body)
+	body += untrustedContentTail(body) + refusalFramingTail()
 	return body + chatWorkDirSpec(workDir) + noiseProfileBlock()
 }
 
@@ -209,6 +209,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		opts.Hooks = c.guard.Hooks()
 	}
 	opts.Hooks = SpillHooks(opts.Hooks, opts.ToolOutputDir)
+	opts.Hooks = WithRefusalRerun(opts.Hooks) // a prose refusal is rerun instead of ending the turn bare
 	// The session id is the provider-side identity (session header, usage metering)
 	// with or without persistence; Norma only puts it on ctx when it writes a transcript.
 	opts.SessionID = sessionID

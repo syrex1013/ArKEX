@@ -392,7 +392,7 @@ func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + untrustedContentTail(body) + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + noiseProfileBlock()
+	return body + untrustedContentTail(body) + refusalFramingTail() + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + noiseProfileBlock()
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
@@ -617,6 +617,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		opts.Hooks = hooks
 	}
 	opts.Hooks = SpillHooks(opts.Hooks, opts.ToolOutputDir)
+	opts.Hooks = WithRefusalRerun(opts.Hooks) // a prose refusal is rerun instead of ending the run bare
 	// The session id is the provider-side identity (session header, usage metering)
 	// with or without persistence; Norma only puts it on ctx when it writes a transcript.
 	opts.SessionID = WorkerSessionID(ts.ID(), intent.ID)

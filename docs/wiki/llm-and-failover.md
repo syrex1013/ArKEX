@@ -98,6 +98,26 @@ Inside a task, two more escalations advance the chain without waiting for the st
 
 A third consecutive non-quota failure also advances (`llmFailStreakThreshold = 3`), pre-commit only.
 
+### Soft refusals
+
+`ErrProviderRefusal` has two shapes. A provider stop reason (`refusal`, `content_filter`) carries no
+text and is failover-eligible as-is. The other shape is prose: the model answers normally, argues
+that the work is theft or out of scope, and ends the turn with no tool call — nothing is retried at
+any other layer, so a planner round looks exactly like a quiet one and the task halts.
+
+Three layers handle the prose shape, without failover (the refusal is about the work, not the
+provider):
+
+- The prompt carries the code-owned `refusalFraming` tail (`agent/refusal_framing.go`), appended
+  like the untrusted-data and noise tails so a DB prompt override cannot drop it.
+- `agent.RefusalRerun` (`agent/refusalhook.go`) reruns the turn, up to `refusalReruns` times, with
+  `RefusalNudge`. It is installed in the planner, worker and chat sessions.
+- `LooksLikeRefusalText` (`llmpool/refusal.go`) scans only the opening 400 bytes, so a normal
+  conclusion that mentions a matched phrase late is not mistaken for a refusal.
+
+Once the cap is reached the refusal stands and `terminalText` labels it, keeping the argument as
+evidence.
+
 ## 5. Health and cooldown
 
 The authoritative breaker is in memory (`llmpool/health.go`), mirrored asynchronously to
