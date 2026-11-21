@@ -106,6 +106,40 @@ func (s *AssetStore) upsertTaskScope(ts TaskScope) error {
 	return err
 }
 
+// scopeRowID returns the stored id of the row matching ts's unique key, whether it
+// was just inserted or already existed (the upsert is idempotent and keeps no id).
+// It mirrors the uq_task_scope_v2 expression index predicate.
+func (s *AssetStore) scopeRowID(ts TaskScope) (int64, error) {
+	var domainVal, netVal, valueVal, companyVal any
+	if ts.Domain != "" {
+		domainVal = ts.Domain
+	}
+	if ts.Net != "" {
+		netVal = ts.Net
+	}
+	if ts.Value != "" {
+		valueVal = ts.Value
+	}
+	if ts.CompanyID != nil && *ts.CompanyID > 0 {
+		companyVal = *ts.CompanyID
+	}
+	var id int64
+	const q = `
+SELECT id FROM task_scope
+WHERE task_id=$1 AND kind=$2
+  AND COALESCE(domain,'')=COALESCE($3,'')
+  AND COALESCE(net::text,'')=COALESCE($4::text,'')
+  AND COALESCE(company_id,0)=COALESCE($5,0)
+  AND COALESCE(value,'')=COALESCE($6,'')`
+	var err error
+	if s.tx != nil {
+		err = s.tx.QueryRow(q, ts.TaskID, ts.Kind, domainVal, netVal, companyVal, valueVal).Scan(&id)
+	} else {
+		err = s.db.QueryRow(q, ts.TaskID, ts.Kind, domainVal, netVal, companyVal, valueVal).Scan(&id)
+	}
+	return id, err
+}
+
 // AddAutoScope records the conservative task scope implied by ONE explicitly-inserted
 // asset item (source='auto'). MUST be called only from insertAssets' top-level loop —
 // never from a db-layer side effect (linkHostAssets), so derived assets do not blindly expand the scope.
@@ -223,6 +257,11 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 	}
 	if err := s.upsertTaskScope(ts); err != nil {
 		return ts, err
+	}
+	// The insert keeps no id (ON CONFLICT DO NOTHING); read it back so the caller
+	// can act on the row it just declared (e.g. delete it right away).
+	if id, err := s.scopeRowID(ts); err == nil {
+		ts.ID = id
 	}
 	return ts, nil
 }

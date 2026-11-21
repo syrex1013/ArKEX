@@ -328,11 +328,17 @@ func extractToken(r *http.Request) string {
 }
 
 // requireAuth wraps h with JWT validation.
-// /api/auth/*, /api/health and /api/ready are exempt.
+// /api/auth/*, /api/health, /api/ready and /api/oast/http are exempt.
+//
+// POST /api/oast/http must stay open: callbacks come from the target under test
+// (blind SSRF/DNS probes), which cannot carry the operator's JWT. The handler
+// only records an untrusted interaction keyed by an unguessable payload tag;
+// reads and configuration remain behind auth. The JSON ingest
+// (/api/oast/callback) stays authenticated for internal pollers.
 func (s *Server) requireAuth(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/api/auth/") || p == "/api/health" || p == "/api/ready" {
+		if strings.HasPrefix(p, "/api/auth/") || p == "/api/health" || p == "/api/ready" || p == "/api/oast/http" {
 			h.ServeHTTP(w, r)
 			return
 		}
