@@ -38,6 +38,10 @@ func (telegramChannel) SecretKeys() []string { return []string{"bot_token"} }
 // reverse proxy); changing it requires re-declaring the Token.
 func (telegramChannel) DestinationKeys() []string { return []string{"base_url"} }
 
+// body_template is the escape hatch for the built-in layout: a Go template over
+// the same data the webhook exposes, so a chat can be told exactly what to show
+// (a one-line alert, a table, a deep link) without a second channel kind.
+
 func (telegramChannel) Validate(cfg map[string]any) error {
 	if cfgString(cfg, "bot_token") == "" {
 		return errors.New("missing Bot Token")
@@ -48,6 +52,11 @@ func (telegramChannel) Validate(cfg map[string]any) error {
 	if base := cfgString(cfg, "base_url"); base != "" {
 		if err := validateHTTPURL(base); err != nil {
 			return fmt.Errorf("invalid API URL: %w", err)
+		}
+	}
+	if tpl := cfgString(cfg, "body_template"); tpl != "" {
+		if _, err := parseWebhookTemplate(tpl); err != nil {
+			return fmt.Errorf("body template syntax error: %w", err)
 		}
 	}
 	return nil
@@ -61,11 +70,24 @@ func (c telegramChannel) Send(ctx context.Context, cfg map[string]any, m Message
 	if err != nil {
 		return 0, Permanent(err)
 	}
-	text, kept := telegramHTML(m)
+	kept := len(m.Items)
+	var text string
+	if tpl := cfgString(cfg, "body_template"); tpl != "" {
+		// A custom template owns the whole body, so truncation stops applying:
+		// Telegram's length limit belongs to the built-in layout, and a template
+		// that runs past it gets a plain API error the configurator can act on.
+		body, rerr := renderWebhookBody(tpl, m)
+		if rerr != nil {
+			return 0, Permanent(rerr)
+		}
+		text = body
+	} else {
+		text, kept = telegramHTML(m)
+	}
 	payload := map[string]any{
 		"chat_id":                  cfgString(cfg, "chat_id"),
 		"text":                     text,
-		"parse_mode":               "HTML",
+		"parse_mode":               telegramParseMode(cfg),
 		"disable_web_page_preview": false,
 	}
 	raw, err := doJSON(ctx, "POST", endpoint, nil, payload)
@@ -90,6 +112,17 @@ func (c telegramChannel) Send(ctx context.Context, cfg map[string]any, m Message
 		return 0, fmt.Errorf("Telegram rate limit: %s", res.Description)
 	}
 	return 0, Permanent(fmt.Errorf("Telegram returned error %d: %s", res.ErrorCode, res.Description))
+}
+
+// telegramParseMode reports the parse mode for this configuration. A custom
+// body_template is plain text unless the template says otherwise: echoing the
+// built-in "HTML" would make Telegram reject a body that is not HTML
+// (and silently swallow angle brackets the template meant literally).
+func telegramParseMode(cfg map[string]any) string {
+	if cfgString(cfg, "body_template") != "" {
+		return cfgString(cfg, "parse_mode")
+	}
+	return "HTML"
 }
 
 // telegramEndpoint builds the sendMessage URL. An empty base_url uses the

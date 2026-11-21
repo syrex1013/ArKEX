@@ -269,6 +269,48 @@ func TestTelegramErrorClassification(t *testing.T) {
 	}
 }
 
+// A custom body_template replaces the built-in layout for Telegram, renders the
+// same data the webhook exposes, and drops the HTML parse mode (or glyphs the
+// template meant literally would be eaten as markup). Without a template the
+// built-in HTML layout is unchanged, covered by the escaping test above.
+func TestTelegramCustomBodyTemplate(t *testing.T) {
+	var text, mode string
+	srv := capturePost(t, `{"ok":true}`, func(t *testing.T, body map[string]any, _ *http.Request) {
+		text, _ = body["text"].(string)
+		mode, _ = body["parse_mode"].(string)
+	})
+	m := singleMsg()
+	cfg := map[string]any{
+		"bot_token":     "tok",
+		"chat_id":       "1",
+		"base_url":      srv.URL,
+		"body_template": `{{range .Items}}{{.SeverityLabel}} · {{.Name}} @ {{.DetailURL}}{{end}}`,
+	}
+	kept, err := (telegramChannel{}).Send(context.Background(), cfg, m)
+	if err != nil {
+		t.Fatalf("delivery failed: %v", err)
+	}
+	if kept != 1 {
+		t.Fatalf("kept=%d, want 1", kept)
+	}
+	if !strings.Contains(text, "login page \"SQL injection\" risk") || !strings.Contains(text, "https://artex.local") {
+		t.Fatalf("template did not render the item data: %q", text)
+	}
+	if mode != "" {
+		t.Fatalf("a custom template must not force a parse mode, got %q", mode)
+	}
+
+	// The declared parse mode is passed through for a template that is HTML.
+	cfg["body_template"] = `<b>{{.Count}}</b>`
+	cfg["parse_mode"] = "HTML"
+	if _, err := (telegramChannel{}).Send(context.Background(), cfg, m); err != nil {
+		t.Fatalf("delivery failed: %v", err)
+	}
+	if mode != "HTML" || text != "<b>1</b>" {
+		t.Fatalf("configured parse mode/text not applied: mode=%q text=%q", mode, text)
+	}
+}
+
 func TestWebhookDefaultTemplateProducesValidJSON(t *testing.T) {
 	// This case is the whole point of the default template: when the title
 	// contains quotes and newlines, any naive `"title": "{{.Title}}"` produces

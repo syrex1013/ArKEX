@@ -97,6 +97,25 @@ export const CHANNEL_FIELDS: Record<string, FieldDef[]> = {
       placeholder: "https://api.telegram.org",
       help: t("Leave empty for the official URL; fill in when proxying a self-hosted Bot API"),
     },
+    {
+      key: "parse_mode",
+      label: t("Parse mode"),
+      kind: "select",
+      options: [
+        { value: "", label: t("Plain text") },
+        { value: "HTML", label: "HTML" },
+        { value: "MarkdownV2", label: "MarkdownV2" },
+      ],
+      help: t("Used only by a custom template; the built-in layout always sends HTML"),
+    },
+    {
+      key: "body_template",
+      label: t("Custom message template"),
+      kind: "textarea",
+      help: t(
+        "Leave empty to use the built-in layout. Variables: {{.Title}} {{.Batch}} {{.Count}} {{.HomeURL}} {{.SentAt}}, plus .Name/.VulnClass/.Severity/.SeverityLabel/.Summary/.Assets/.DetailURL/.StatusLabel under range .Items. The rendered text is the whole message body, so keep it under Telegram's 4096-character limit.",
+      ),
+    },
   ],
   email: [
     { key: "host", label: t("SMTP server"), kind: "text", placeholder: "smtp.example.com" },
