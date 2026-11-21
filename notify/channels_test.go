@@ -311,6 +311,59 @@ func TestTelegramCustomBodyTemplate(t *testing.T) {
 	}
 }
 
+// Telegram-only destination options reach the Bot API payload, and stay out of
+// it when unset: a plain chat must get the same request it got before.
+func TestTelegramDeliveryOptions(t *testing.T) {
+	var body map[string]any
+	srv := capturePost(t, `{"ok":true}`, func(t *testing.T, b map[string]any, _ *http.Request) { body = b })
+	cfg := map[string]any{"bot_token": "tok", "chat_id": "1", "base_url": srv.URL}
+
+	if _, err := (telegramChannel{}).Send(context.Background(), cfg, singleMsg()); err != nil {
+		t.Fatalf("delivery failed: %v", err)
+	}
+	for _, k := range []string{"message_thread_id", "disable_notification"} {
+		if _, present := body[k]; present {
+			t.Errorf("%s must be omitted when not configured, got %v", k, body[k])
+		}
+	}
+	if body["disable_web_page_preview"] != true {
+		t.Errorf("link preview must be off by default, got %v", body["disable_web_page_preview"])
+	}
+
+	cfg["message_thread_id"] = 27
+	cfg["silent"] = true
+	cfg["link_preview"] = true
+	if _, err := (telegramChannel{}).Send(context.Background(), cfg, singleMsg()); err != nil {
+		t.Fatalf("delivery failed: %v", err)
+	}
+	if body["message_thread_id"] != float64(27) || body["disable_notification"] != true || body["disable_web_page_preview"] != false {
+		t.Fatalf("delivery options not applied: %v", body)
+	}
+
+	// A non-numeric topic is a typo, not "post to General": refuse it at save time.
+	if err := (telegramChannel{}).Validate(map[string]any{"bot_token": "t", "chat_id": "1", "message_thread_id": "general"}); err == nil {
+		t.Fatal("a non-numeric topic id must be rejected")
+	}
+}
+
+// A digest opens with the severity counts of the items actually in it and links
+// each item title, so a reader can triage and tap through without scrolling.
+func TestTelegramDigestSeverityAndItemLinks(t *testing.T) {
+	text, kept := telegramHTML(batchMsg(3))
+	if kept != 3 {
+		t.Fatalf("kept=%d, want 3", kept)
+	}
+	if !strings.Contains(text, "🟡 Medium 3") {
+		t.Errorf("digest lacks the severity breakdown: %q", text)
+	}
+	m := batchMsg(1)
+	m.Items[0].DetailURL = "https://artex.local/f/1"
+	text, _ = telegramHTML(m)
+	if !strings.Contains(text, `<a href="https://artex.local/f/1">vuln1</a>`) {
+		t.Errorf("digest item title is not linked: %q", text)
+	}
+}
+
 func TestWebhookDefaultTemplateProducesValidJSON(t *testing.T) {
 	// This case is the whole point of the default template: when the title
 	// contains quotes and newlines, any naive `"title": "{{.Title}}"` produces

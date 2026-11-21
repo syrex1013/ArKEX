@@ -98,6 +98,25 @@ export const CHANNEL_FIELDS: Record<string, FieldDef[]> = {
       help: t("Leave empty for the official URL; fill in when proxying a self-hosted Bot API"),
     },
     {
+      key: "message_thread_id",
+      label: t("Topic ID"),
+      kind: "number",
+      placeholder: "0",
+      help: t("Forum supergroups only: the topic to post into. Empty posts to the General topic"),
+    },
+    {
+      key: "silent",
+      label: t("Silent delivery"),
+      kind: "switch",
+      help: t("Deliver without a notification sound"),
+    },
+    {
+      key: "link_preview",
+      label: t("Link preview"),
+      kind: "switch",
+      help: t("Load a preview card for the detail link. Off by default: a single-finding message would otherwise fetch the target page in every recipient's client"),
+    },
+    {
       key: "parse_mode",
       label: t("Parse mode"),
       kind: "select",

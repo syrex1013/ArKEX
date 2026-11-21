@@ -164,6 +164,19 @@ func markdownBatchIntro(m Message, items []Item, total int) string {
 	// Give the distribution by severity so readers can spot critical items at a
 	// glance. Only count the items **actually included in this message**, so that
 	// "Critical 3" matches what can be counted below.
+	if bd := severityBreakdown(items); bd != "" {
+		b.WriteString("\n" + bd)
+	}
+	b.WriteString("\n\n")
+	return b.String()
+}
+
+// severityBreakdown renders the per-severity counts of the items **included in
+// this message** (not the batch total), ordered critical→low so the urgent line
+// reads first. Empty when no item carries a known severity. Shared by the
+// markdown and HTML families: a digest that opens with "🔴 Critical 2" lets a
+// reader triage before scrolling, which a bare item count cannot.
+func severityBreakdown(items []Item) string {
 	counts := map[string]int{}
 	for _, it := range items {
 		counts[it.Severity]++
@@ -174,11 +187,7 @@ func markdownBatchIntro(m Message, items []Item, total int) string {
 			parts = append(parts, fmt.Sprintf("%s %d", SeverityLabel(sev), n))
 		}
 	}
-	if len(parts) > 0 {
-		b.WriteString("\n" + strings.Join(parts, " · "))
-	}
-	b.WriteString("\n\n")
-	return b.String()
+	return strings.Join(parts, " · ")
 }
 
 // writeItem renders a single vulnerability item.

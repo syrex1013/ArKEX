@@ -41,7 +41,14 @@ func (telegramChannel) DestinationKeys() []string { return []string{"base_url"} 
 // body_template is the escape hatch for the built-in layout: a Go template over
 // the same data the webhook exposes, so a chat can be told exactly what to show
 // (a one-line alert, a table, a deep link) without a second channel kind.
-
+// parse_mode goes with it (plain/HTML/MarkdownV2); the built-in layout always
+// sends HTML.
+//
+// Three destination options are Telegram-only and earn their place: chat_id is
+// the chat, message_thread_id picks a forum topic inside it, silent suppresses
+// the notification sound, and link_preview turns the web-page preview on (off
+// by default, because a single finding message would otherwise load the target
+// page as a preview card in every recipient's client).
 func (telegramChannel) Validate(cfg map[string]any) error {
 	if cfgString(cfg, "bot_token") == "" {
 		return errors.New("missing Bot Token")
@@ -52,6 +59,17 @@ func (telegramChannel) Validate(cfg map[string]any) error {
 	if base := cfgString(cfg, "base_url"); base != "" {
 		if err := validateHTTPURL(base); err != nil {
 			return fmt.Errorf("invalid API URL: %w", err)
+		}
+	}
+	if raw, present := cfg["message_thread_id"]; present && raw != nil {
+		// cfgInt turns a non-numeric value into 0, which would silently send to
+		// the General topic instead of the configured one. Reject the typo at
+		// save time instead.
+		if s, isStr := raw.(string); isStr && strings.TrimSpace(s) != "" && cfgInt(cfg, "message_thread_id") == 0 {
+			return fmt.Errorf("message_thread_id must be a topic id (a positive integer), got %q", s)
+		}
+		if cfgInt(cfg, "message_thread_id") < 0 {
+			return fmt.Errorf("message_thread_id must be a positive integer")
 		}
 	}
 	if tpl := cfgString(cfg, "body_template"); tpl != "" {
@@ -88,7 +106,17 @@ func (c telegramChannel) Send(ctx context.Context, cfg map[string]any, m Message
 		"chat_id":                  cfgString(cfg, "chat_id"),
 		"text":                     text,
 		"parse_mode":               telegramParseMode(cfg),
-		"disable_web_page_preview": false,
+		"disable_web_page_preview": !cfgBool(cfg, "link_preview"),
+	}
+	// Forum supergroups deliver into a topic; without the thread id a message
+	// lands in the General topic and is easily missed. Omitted otherwise, so a
+	// plain group or private chat payload stays byte-identical.
+	if thread := cfgInt(cfg, "message_thread_id"); thread > 0 {
+		payload["message_thread_id"] = thread
+	}
+	// Silent delivery: a digest at 3am should not ring every phone in the group.
+	if cfgBool(cfg, "silent") {
+		payload["disable_notification"] = true
 	}
 	raw, err := doJSON(ctx, "POST", endpoint, nil, payload)
 	if err != nil {
@@ -162,8 +190,14 @@ func telegramHTML(m Message) (string, int) {
 		})
 		items := m.Items[:kept]
 		b.WriteString("<b>" + telegramEscape(telegramBatchTitle(m, items, len(m.Items))) + "</b>")
+		// Severity counts of the items in THIS message, so the urgent line is
+		// visible before any scrolling — the markdown and Feishu digests already
+		// open with it.
+		if bd := severityBreakdown(items); bd != "" {
+			b.WriteString("\n" + telegramEscape(bd))
+		}
 		for i, it := range items {
-			b.WriteString("\n" + telegramEscape(telegramBatchLine(it, i+1, lim)))
+			b.WriteString("\n" + telegramBatchLine(it, i+1, lim))
 		}
 		b.WriteString(footer)
 		return TruncateHTML(b.String(), telegramTextLimit), kept
@@ -200,16 +234,30 @@ func telegramHTML(m Message) (string, int) {
 // truncation notice (in characters).
 const telegramReservedRunes = 160
 
-// telegramBatchLine renders one entry of a digest (unescaped; the caller escapes
-// it uniformly).
+// telegramBatchLine renders one entry of a digest. Unlike its siblings this
+// returns HTML: the item title is a link when the backlink is known, so a
+// reader taps straight into the finding instead of scrolling to a footer. The
+// caller must not escape the result again; every untrusted field is escaped
+// here.
 func telegramBatchLine(it Item, idx int, lim Limits) string {
 	if it.Kind == EventTaskStatusChanged {
-		return fmt.Sprintf("%d. %s: %s → %s", idx, telegramTaskTitle(it), StatusLabel(it.FromStatus), StatusLabel(it.ToStatus))
+		return fmt.Sprintf("%d. %s: %s → %s", idx, telegramEscape(telegramTaskTitle(it)),
+			telegramEscape(StatusLabel(it.FromStatus)), telegramEscape(StatusLabel(it.ToStatus)))
 	}
+	title := "<b>" + telegramEscape(it.Title()) + "</b>"
+	if it.DetailURL != "" {
+		title = fmt.Sprintf("<a href=\"%s\">%s</a>", telegramEscapeAttr(it.DetailURL), telegramEscape(it.Title()))
+	}
+	line := fmt.Sprintf("%d. %s · %s", idx, telegramEscape(SeverityLabel(it.Severity)), title)
 	if a := assetLine(it.Assets, lim.AssetsShown); a != "" {
-		return fmt.Sprintf("%d. %s · %s — %s", idx, SeverityLabel(it.Severity), it.Title(), a)
+		line += " — " + telegramEscape(a)
 	}
-	return fmt.Sprintf("%d. %s · %s", idx, SeverityLabel(it.Severity), it.Title())
+	// A one-line summary keeps the digest triageable without a second tap; 60
+	// characters matches the markdown family's digest compression.
+	if s := OneLine(it.Summary, 60); s != "" {
+		line += "\n    " + telegramEscape(s)
+	}
+	return line
 }
 
 func telegramTaskTitle(it Item) string {
