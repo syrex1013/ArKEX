@@ -1,20 +1,12 @@
 <div align="center">
 
-<img src="web/public/logo.svg" width="84" alt="ARTEX logo" />
+<img src="assets/readme/hero.svg" width="100%" alt="ArKex — autonomous penetration testing that keeps its receipts: planner, workers, dual graphs, evidence-bound findings" />
 
-# ArKex
-
-**Upgraded ARTEX — autonomous penetration testing that keeps its receipts.**
-
-(lineage: [BaaRai/ARTEX](https://github.com/BaaRai/ARTEX) / [Autumn-27](https://github.com/Autumn-27), AGPL-3.0). See [PARITY.md](PARITY.md).
-
-Self-hosted multi-agent offensive security. A planner explores, workers run real tools,
-and every finding stays bound to the assets and HTTP traffic that prove it.
-
-[![Release](https://img.shields.io/github/v/release/BaaRai/ARTEX?label=release&color=6b34db)](https://github.com/BaaRai/ARTEX/releases)
-[![License](https://img.shields.io/github/license/BaaRai/ARTEX?color=6b34db)](LICENSE)
-[![CI](https://github.com/BaaRai/ARTEX/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BaaRai/ARTEX/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/github/go-mod/go-version/BaaRai/ARTEX?color=6b34db)](go.mod)
+[![Release](https://img.shields.io/github/v/release/syrex1013/ArKEX?label=release&color=6b34db)](https://github.com/syrex1013/ArKEX/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-6b34db)](LICENSE)
+[![CI](https://github.com/syrex1013/ArKEX/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/syrex1013/ArKEX/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/Go-1.27-6b34db)](go.mod)
+[![Sponsor](https://img.shields.io/badge/sponsor-syrex1013-6b34db?logo=github)](https://github.com/sponsors/syrex1013)
 
 [Quick start](#quick-start) · [Screenshots](#screenshots) · [How it works](#how-it-works) · [Install](#installation) · [Configuration](#configuration) · [Security](SECURITY.md)
 
@@ -44,8 +36,8 @@ justify it, and every autonomous action passes through scope rules, approval gat
 ## Quick start
 
 ```bash
-git clone https://github.com/BaaRai/ARTEX.git
-cd ARTEX
+git clone https://github.com/syrex1013/ArKEX.git
+cd ArKEX
 cp .env.example .env            # set POSTGRES_PASSWORD (and optionally an LLM key)
 docker compose up -d --build    # builds from this checkout, starts PostgreSQL
 ```
@@ -335,8 +327,8 @@ worker remains confined to the intent it claimed.
 ### Option 1: one-click install script (recommended)
 
 ```bash
-git clone https://github.com/BaaRai/ARTEX.git
-cd ARTEX
+git clone https://github.com/syrex1013/ArKEX.git
+cd ArKEX
 ./install.sh
 ```
 
@@ -354,8 +346,8 @@ first-run claim), or keep loopback and use a reverse proxy or SSH tunnel.
 ### Option 2: Docker Compose (manual)
 
 ```bash
-git clone https://github.com/BaaRai/ARTEX.git
-cd ARTEX
+git clone https://github.com/syrex1013/ArKEX.git
+cd ArKEX
 cp .env.example .env            # set POSTGRES_PASSWORD, optionally ANTHROPIC_API_KEY
 docker compose up -d --build
 # → http://localhost:8787
@@ -370,7 +362,7 @@ Legacy SSE servers usually establish the event stream with `GET /sse` and receiv
 
 ### Option 3: prebuilt binaries (Releases)
 
-Download the zip for your platform from [Releases](https://github.com/BaaRai/ARTEX/releases). It
+Download the zip for your platform from [Releases](https://github.com/syrex1013/ArKEX/releases). It
 contains `artex`, `start.sh` (`start.bat` on Windows), `skills/` and `config.example.json`:
 
 ```bash
@@ -390,7 +382,7 @@ neither.
 
 ```bash
 sha256sum -c SHA256SUMS                           # add --ignore-missing if you downloaded only some zips
-gh attestation verify <zip> --repo BaaRai/ARTEX   # built by this repository's release workflow
+gh attestation verify <zip> --repo syrex1013/ArKEX   # built by this repository's release workflow
 ```
 
 ### Option 4: build the single binary from source
@@ -644,7 +636,7 @@ Your data is unaffected: `./data`, the `pgdata` volume and `./skills` are not pa
 #### Option 1: one-click update script
 
 ```bash
-cd ARTEX
+cd ArKEX
 ./update.sh
 ```
 
@@ -655,7 +647,7 @@ recompile `./artex`; restart the process for it to take effect).
 #### Option 2: Docker Compose (manual)
 
 ```bash
-cd ARTEX
+cd ArKEX
 git pull
 docker compose build artex
 docker compose up -d artex
@@ -795,7 +787,7 @@ Operational security properties:
 
 ## About this fork
 
-This repository is the English translation and continuation of ARTEX, originally by [Autumn-27](https://github.com/Autumn-27). The upstream repository is no longer public, so the link points to the author profile. Changes in this fork are tracked in [CHANGELOG.md](CHANGELOG.md), under the same AGPL-3.0 license.
+This repository is the English translation and continuation of ARTEX, originally by [Autumn-27](https://github.com/Autumn-27). The upstream repository is no longer public, so the link points to the author profile. Changes in this fork are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -810,13 +802,10 @@ This repository is the English translation and continuation of ARTEX, originally
 
 ### Open source license
 
-This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**; see the
-[LICENSE](LICENSE) file for the full terms.
+This project is licensed under the **MIT License**; see the [LICENSE](LICENSE) file for the full terms.
 
-Anyone may use, modify and distribute this project, but **derivative works must also be open-sourced
-under AGPL-3.0**; in particular, **if you modify this project and provide it to users over a
-network (for example as an online service), you must make the corresponding complete source code
-available to those users**.
+> **Lineage note**: this project is a continuation of ARTEX by [Autumn-27](https://github.com/Autumn-27),
+> whose code was released under AGPL-3.0.
 
 > **Important**: the open source license does not restrict how the software is used. The usage
 > restrictions and disclaimer below are additional terms from the maintainers.
