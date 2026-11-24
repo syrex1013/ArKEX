@@ -8,6 +8,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, PauseIcon, PlayIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { MullvadIndicator } from "@/app/(main)/_components/sidebar/mullvad-indicator";
 import { StatusBadge } from "@/components/status-badge";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -395,18 +396,23 @@ function TaskDetailInner() {
 
   if (!task) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
-        <p className="text-muted-foreground">
-          {loaded ? t("Task {id} was deleted, archived, or does not exist", { id }) : t("Loading…")}
-        </p>
-        {loaded && (
-          <Button asChild variant="outline">
-            <Link href="/function/tasks">
-              <ArrowLeftIcon /> {t("Back to task list")}
-            </Link>
-          </Button>
-        )}
-      </div>
+      <>
+        <div className="sticky top-0 z-10 flex h-8 shrink-0 items-center justify-end border-b bg-background px-4">
+          <MullvadIndicator />
+        </div>
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
+          <p className="text-muted-foreground">
+            {loaded ? t("Task {id} was deleted, archived, or does not exist", { id }) : t("Loading…")}
+          </p>
+          {loaded && (
+            <Button asChild variant="outline">
+              <Link href="/function/tasks">
+                <ArrowLeftIcon /> {t("Back to task list")}
+              </Link>
+            </Button>
+          )}
+        </div>
+      </>
     );
   }
 
@@ -426,7 +432,7 @@ function TaskDetailInner() {
   const engineMode = paused ? "paused" : (task.engine_mode ?? "idle");
   let controlVariant: "default" | "secondary" | "outline" = "outline";
   let controlIcon = <PauseIcon data-icon="inline-start" />;
-  let controlLabel = t("Pause");
+  let controlLabel = t("Stop");
   if (terminal) {
     controlVariant = "secondary";
     controlIcon = <CheckIcon data-icon="inline-start" />;
@@ -499,7 +505,10 @@ function TaskDetailInner() {
             {controlLabel}
           </Button>
         </div>
-        <p className="truncate text-xs text-muted-foreground">{task.goal}</p>
+        <div className="flex min-w-0 items-center justify-between gap-2">
+          <p className="min-w-0 truncate text-xs text-muted-foreground">{task.goal}</p>
+          <MullvadIndicator />
+        </div>
         {/* Tabs */}
         <div className="no-scrollbar min-w-0 overflow-x-auto">
           <TabsList variant="default" className="min-w-max">

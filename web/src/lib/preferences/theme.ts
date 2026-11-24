@@ -14,7 +14,7 @@ export type ResolvedThemeMode = "light" | "dark";
 
 export const THEME_PRESET_OPTIONS = [
   {
-    label: t("Default"),
+    label: "Default",
     value: "default",
     primary: {
       light: "oklch(0.205 0 0)",
@@ -27,6 +27,14 @@ export const THEME_PRESET_OPTIONS = [
     primary: {
       light: "oklch(0.6489 0.237 26.9728)",
       dark: "oklch(0.7044 0.1872 23.1858)",
+    },
+  },
+  {
+    label: "Silent Sentinel",
+    value: "silent-sentinel",
+    primary: {
+      light: "#3b6ea5",
+      dark: "#98cbff",
     },
   },
   {
@@ -43,14 +51,6 @@ export const THEME_PRESET_OPTIONS = [
     primary: {
       light: "oklch(0.64 0.17 36.44)",
       dark: "oklch(0.64 0.17 36.44)",
-    },
-  },
-  {
-    label: "Silent Sentinel",
-    value: "silent-sentinel",
-    primary: {
-      light: "#3b6ea5",
-      dark: "#98cbff",
     },
   },
   {

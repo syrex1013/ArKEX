@@ -604,7 +604,8 @@ type FindingTaskOption struct {
 // every query to that engagement via the finding's task (t.engagement_id);
 // cold archives carry no engagement, so their aggregates only merge into the
 // unscoped ("all engagements") result.
-func (d *DB) FindingStats(engagementID int64) (*FindingStats, error) {
+// FindingStatsSummary returns exact counts for live findings without loading filters or archives.
+func (d *DB) FindingStatsSummary(ctx context.Context, engagementID int64) (*FindingStats, error) {
 	st := &FindingStats{VulnClasses: []string{}, Tasks: []FindingTaskOption{}}
 	// Scope suffix: findings joined to their task, filtered by engagement.
 	scopeJoin, scopeWhere, scopeArgs := "", "", []any{}
@@ -613,7 +614,7 @@ func (d *DB) FindingStats(engagementID int64) (*FindingStats, error) {
 		scopeWhere = ` WHERE t.engagement_id = $1`
 		scopeArgs = []any{engagementID}
 	}
-	err := d.QueryRow(`SELECT
+	err := d.QueryRowContext(ctx, `SELECT
 		COUNT(*),
 		COUNT(*) FILTER (WHERE f.status = 'pending'),
 		COUNT(*) FILTER (WHERE f.report_state = 'submitted'),
@@ -624,8 +625,19 @@ func (d *DB) FindingStats(engagementID int64) (*FindingStats, error) {
 		COUNT(*) FILTER (WHERE f.severity = 'low')
 		FROM findings f`+scopeJoin+scopeWhere, scopeArgs...).
 		Scan(&st.Total, &st.Pending, &st.Submitted, &st.Accepted, &st.Critical, &st.High, &st.Medium, &st.Low)
+	return st, err
+}
+
+func (d *DB) FindingStats(engagementID int64) (*FindingStats, error) {
+	st, err := d.FindingStatsSummary(context.Background(), engagementID)
 	if err != nil {
 		return nil, err
+	}
+	// Scope suffix: findings joined to their task, filtered by engagement.
+	scopeJoin, scopeArgs := "", []any{}
+	if engagementID > 0 {
+		scopeJoin = ` JOIN tasks t ON f.task_id = t.id`
+		scopeArgs = []any{engagementID}
 	}
 	vulnWhere := ` WHERE f.vulnclass <> ''`
 	if engagementID > 0 {

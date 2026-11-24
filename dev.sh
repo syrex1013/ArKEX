@@ -14,7 +14,7 @@ trap cleanup EXIT INT TERM
 go run ./cmd/artex -addr :8787 -proxy 127.0.0.1:8788 &
 
 # Frontend hot reload (Vite/Next dev server, /api reverse-proxied to :8787).
-( cd web && npm run dev ) &
+( cd web && bun run dev ) &
 
 echo "[dev] backend :8787 / proxy :8788 / frontend http://localhost:5173  (Ctrl-C to exit)"
 wait

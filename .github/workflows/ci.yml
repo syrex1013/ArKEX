@@ -139,18 +139,16 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-      - run: npx tsc --noEmit
-      - run: npm run test:polling
-      - run: npm run test:replay
-      - run: npm run test:upload
-      - run: npm run test:i18n
-      - run: npm run build:static
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
+      - run: bun run test:polling
+      - run: bun run test:replay
+      - run: bun run test:upload
+      - run: bun run test:i18n
+      - run: bun --bun run build:static
 
   python:
     runs-on: ubuntu-latest

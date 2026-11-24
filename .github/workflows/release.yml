@@ -15,14 +15,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
         working-directory: web
-      - run: npm run build:static
+      - run: bun --bun run build:static
         working-directory: web
       - uses: actions/upload-artifact@v4
         with:
@@ -108,6 +106,9 @@ jobs:
         id: syft
         with:
           syft-version: v1.54.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
       - name: Generate CycloneDX SBOM
         env:
           SYFT: ${{ steps.syft.outputs.cmd }}
@@ -116,7 +117,10 @@ jobs:
         run: |
           mkdir -p "$SRC/web"
           cp go.mod go.sum "$SRC/"
-          cp web/package-lock.json "$SRC/web/"
+          cp web/package.json web/bun.lock "$SRC/web/"
+          # syft catalogs node_modules for pkg:npm; bun.lock alone is not enough
+          # on every syft version, so materialize modules from the lockfile.
+          ( cd "$SRC/web" && bun install --frozen-lockfile --ignore-scripts )
           sbom="dist/artex-${TAG}.cdx.json"
           "$SYFT" scan "dir:$SRC" --source-name artex --source-version "$TAG" -o "cyclonedx-json=$sbom"
           grep -q '"pkg:golang/' "$sbom" || { echo "::error::SBOM has no pkg:golang entries"; exit 1; }

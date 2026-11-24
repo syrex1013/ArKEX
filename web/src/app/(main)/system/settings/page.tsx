@@ -23,6 +23,7 @@ import { t } from "@/i18n";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
 import type { Settings } from "@/lib/types";
+import { findWireGuardRelay, parseWireGuardConfig } from "@/lib/wireguard-config";
 
 import { ImportArtexCard } from "./import-artex-card";
 import { NoiseProfileCard } from "./noise-profile-card";
@@ -69,6 +70,9 @@ export default function SystemSettingsPage() {
   const [mullvadSessionUp, setMullvadSessionUp] = React.useState(false);
   const [sliverPath, setSliverPath] = React.useState("");
   const [savingMullvad, setSavingMullvad] = React.useState(false);
+  const [readingWireGuard, setReadingWireGuard] = React.useState(false);
+  const [wireGuardImported, setWireGuardImported] = React.useState(false);
+  const wireGuardDraft = React.useRef(false);
   const [testing, setTesting] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -83,6 +87,7 @@ export default function SystemSettingsPage() {
   const [noaCompaction, setNoaCompaction] = React.useState(false);
   // Pure frontend preference: bypasses /api/settings, reads and writes localStorage directly.
   const sendMode = useChatSendMode();
+  const mullvadBusy = !loaded || readingWireGuard || savingMullvad || savingMullvadKey;
 
   const apply = React.useCallback((s: Settings) => {
     setTrafficCapture(!!s.traffic_capture);
@@ -97,8 +102,10 @@ export default function SystemSettingsPage() {
     setMullvadEnabled(!!s.mullvad_proxy_enabled);
     setMullvadPort(String(s.mullvad_proxy_port ?? 18101));
     setMullvadKeySet(!!s.mullvad_private_key_set);
-    setMullvadRelay(s.mullvad_relay ?? "");
-    setMullvadAddress(s.mullvad_address ?? "");
+    if (!wireGuardDraft.current) {
+      setMullvadRelay(s.mullvad_relay ?? "");
+      setMullvadAddress(s.mullvad_address ?? "");
+    }
     setMullvadTaskBlocked(!!s.mullvad_task_blocked);
     setSliverPath(s.sliver_config_path ?? "");
     setPyInterp(s.python_interpreter ?? "");
@@ -317,6 +324,39 @@ export default function SystemSettingsPage() {
       });
   };
 
+  const importWireGuard = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (file.size > 64 * 1024) {
+      toast.error(t("WireGuard config must be smaller than 64 KB"));
+      return;
+    }
+    setReadingWireGuard(true);
+    try {
+      const config = parseWireGuardConfig(await file.text());
+      if (!config) {
+        toast.error(t("Expected a WireGuard config with one interface, an IPv4 tunnel address, and one Mullvad peer."));
+        return;
+      }
+      const { servers } = await api.mullvadServers(false);
+      const relay = findWireGuardRelay(config.endpointHost, servers);
+      if (!relay) {
+        toast.error(t("The WireGuard endpoint did not match a single Mullvad relay."));
+        return;
+      }
+      setMullvadKeyInput(config.privateKey);
+      setMullvadAddress(config.address);
+      setMullvadRelay(relay);
+      wireGuardDraft.current = true;
+      setWireGuardImported(true);
+    } catch {
+      toast.error(t("Could not read the WireGuard config or load Mullvad relays."));
+    } finally {
+      setReadingWireGuard(false);
+    }
+  };
+
   const saveMullvadKey = () => {
     setSavingMullvadKey(true);
     api
@@ -332,26 +372,49 @@ export default function SystemSettingsPage() {
 
   const saveMullvad = () => {
     const port = Number(mullvadPort);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    if (!wireGuardImported && (!Number.isInteger(port) || port < 1 || port > 65535)) {
       toast.error(t("Proxy port must be between 1 and 65535"));
       return;
     }
     const address = mullvadAddress.trim();
-    if (address && !/^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(address)) {
+    if (
+      (address || wireGuardImported) &&
+      !/^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(address)
+    ) {
       toast.error(t("Mullvad address must be a bare IPv4 address"));
+      return;
+    }
+    const privateKey = mullvadKeyInput.trim();
+    if (wireGuardImported && !mullvadRelay.trim()) {
+      toast.error(t("Enter a Mullvad relay hostname before saving the imported config."));
+      return;
+    }
+    if (wireGuardImported && !/^[A-Za-z0-9+/]{43}=$/.test(privateKey)) {
+      toast.error(t("Enter a valid WireGuard private key before saving the imported config."));
       return;
     }
     setSavingMullvad(true);
     api
       .setSettings({
-        mullvad_proxy_port: port,
+        ...(wireGuardImported
+          ? { mullvad_private_key: privateKey }
+          : { mullvad_proxy_port: port, sliver_config_path: sliverPath.trim() }),
         mullvad_relay: mullvadRelay.trim(),
         mullvad_address: address,
-        sliver_config_path: sliverPath.trim(),
       })
       .then((s) => {
-        apply(s);
-        toast.success(t("Saved Mullvad relay, proxy port and Sliver config path"));
+        if (wireGuardImported) {
+          wireGuardDraft.current = false;
+          setWireGuardImported(false);
+          setMullvadKeyInput("");
+          setMullvadKeySet(!!s.mullvad_private_key_set);
+          setMullvadRelay(s.mullvad_relay ?? "");
+          setMullvadAddress(s.mullvad_address ?? "");
+          toast.success(t("Saved WireGuard config"));
+        } else {
+          apply(s);
+          toast.success(t("Saved Mullvad relay, proxy port and Sliver config path"));
+        }
       })
       .catch((e) => toast.error(t("Save failed: {error}", { error: (e as Error).message })))
       .finally(() => setSavingMullvad(false));
@@ -560,6 +623,21 @@ export default function SystemSettingsPage() {
               <div className="text-sm text-emerald-500">{t("Tunneled through Mullvad")}</div>
             ) : null}
             <div className="flex flex-col gap-2">
+              <Label htmlFor="wireguard-config">{t("Import WireGuard config")}</Label>
+              <Input
+                id="wireguard-config"
+                type="file"
+                accept=".conf"
+                disabled={mullvadBusy}
+                onChange={importWireGuard}
+              />
+              <p className="text-xs text-muted-foreground" role="status">
+                {wireGuardImported
+                  ? t("Review the imported private key, relay and tunnel address, then select Save WireGuard config.")
+                  : t("Choose a Mullvad WireGuard .conf file to fill the settings below.")}
+              </p>
+            </div>
+            <div className="flex flex-col gap-2">
               <Label htmlFor="mullvad-key" className="text-sm font-normal text-muted-foreground">
                 {t("WireGuard private key")}
                 {mullvadKeySet ? ` · ${t("configured")}` : ""}
@@ -575,12 +653,18 @@ export default function SystemSettingsPage() {
                       : t("Base64 WireGuard private key (empty = keep stored)")
                   }
                   value={mullvadKeyInput}
-                  disabled={!loaded || savingMullvadKey}
+                  disabled={mullvadBusy}
                   onChange={(e) => setMullvadKeyInput(e.target.value)}
                 />
-                <Button type="button" onClick={saveMullvadKey} disabled={!loaded || savingMullvadKey}>
-                  {t("Save")}
-                </Button>
+                {!wireGuardImported && (
+                  <Button
+                    type="button"
+                    onClick={saveMullvadKey}
+                    disabled={mullvadBusy}
+                  >
+                    {t("Save")}
+                  </Button>
+                )}
               </div>
             </div>
             <div className="grid gap-4 md:grid-cols-2">
@@ -594,7 +678,7 @@ export default function SystemSettingsPage() {
                   min={1}
                   max={65535}
                   value={mullvadPort}
-                  disabled={!loaded || savingMullvad}
+                  disabled={mullvadBusy}
                   onChange={(e) => setMullvadPort(e.target.value)}
                 />
               </div>
@@ -607,7 +691,7 @@ export default function SystemSettingsPage() {
                   autoComplete="off"
                   placeholder={t("e.g. de-ber-wg-101 (pick on the C2 page)")}
                   value={mullvadRelay}
-                  disabled={!loaded || savingMullvad}
+                  disabled={mullvadBusy}
                   onChange={(e) => setMullvadRelay(e.target.value)}
                 />
               </div>
@@ -620,7 +704,7 @@ export default function SystemSettingsPage() {
                   autoComplete="off"
                   placeholder={t("tunnel IP, e.g. 10.75.177.15")}
                   value={mullvadAddress}
-                  disabled={!loaded || savingMullvad}
+                  disabled={mullvadBusy}
                   onChange={(e) => setMullvadAddress(e.target.value)}
                 />
                 <p className="text-xs text-muted-foreground">
@@ -637,13 +721,18 @@ export default function SystemSettingsPage() {
                 autoComplete="off"
                 placeholder="/app/data/sliver/arkex.operator.conf"
                 value={sliverPath}
-                disabled={!loaded || savingMullvad}
+                disabled={mullvadBusy}
                 onChange={(e) => setSliverPath(e.target.value)}
               />
-              <Button type="button" className="self-start" onClick={saveMullvad} disabled={!loaded || savingMullvad}>
-                {t("Save")}
-              </Button>
             </div>
+            <Button
+              type="button"
+              className="self-start"
+              onClick={saveMullvad}
+              disabled={mullvadBusy}
+            >
+              {wireGuardImported ? t("Save WireGuard config") : t("Save")}
+            </Button>
           </CardContent>
         </Card>
 

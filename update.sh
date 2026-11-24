@@ -54,14 +54,20 @@ update_local(){
   [ -f config.json ] || warn "config.json not found — use ./install.sh instead for a first-time deployment"
   ok "Go: $(go version)"
 
-  if command -v npm >/dev/null 2>&1; then
+  if command -v bun >/dev/null 2>&1; then
+    info "Rebuilding frontend static assets…"
+    ( cd web && bun install --frozen-lockfile && bun --bun run build:static )
+    rm -rf server/webui/dist && cp -r web/out server/webui/dist
+    info "Recompiling the embedded single binary…"
+    CGO_ENABLED=0 go build -tags embedui -trimpath -o artex ./cmd/artex
+  elif command -v npm >/dev/null 2>&1; then
     info "Rebuilding frontend static assets…"
     ( cd web && npm ci && npm run build:static )
     rm -rf server/webui/dist && cp -r web/out server/webui/dist
     info "Recompiling the embedded single binary…"
     CGO_ENABLED=0 go build -tags embedui -trimpath -o artex ./cmd/artex
   else
-    warn "npm not detected: building a backend **without the embedded frontend** (run the frontend separately with npm run dev)"
+    warn "bun/npm not detected: building a backend **without the embedded frontend** (run the frontend separately with bun run dev)"
     CGO_ENABLED=0 go build -o artex ./cmd/artex
   fi
   ok "Build complete → ./artex"

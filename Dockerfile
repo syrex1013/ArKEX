@@ -11,14 +11,16 @@
 # one source.
 
 # ---------------------------------------------------------------- frontend ---
-# Pinned to the Node 22 line the CI/release workflows use. On the build platform
-# only; the frontend static export is architecture-independent.
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
+# Pinned to Bun 1.x (Debian). On the build platform only; the frontend static
+# export is architecture-independent. Runtime stage still ships Node 22 for
+# agent tooling (playwright-mcp / npm).
+FROM --platform=$BUILDPLATFORM oven/bun:1-debian AS web
 WORKDIR /src/web
-COPY web/package.json web/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
+COPY web/package.json web/bun.lock ./
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile --ignore-scripts
 COPY web/ ./
-RUN npm run build:static
+RUN bun --bun run build:static
 
 # ------------------------------------------------------------- Go binary ---
 # Pinned to the Go 1.26 line (matches go.mod and the release binaries job). The

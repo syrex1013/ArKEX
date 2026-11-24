@@ -9,9 +9,9 @@
  *
  * Usage:
  * - During local development, run manually after adding any new theme preset:
- *     npm run generate:presets
+ *     bun run generate:presets
  * - Ensure that each new CSS preset includes `label:` and `value:` comments.
- * - This generation step is currently automated using a Husky pre-push hook.
+ * - This generation step is currently automated using a Husky pre-commit hook.
  * - You may optionally integrate it directly into a build step if preferred.
  */
 
@@ -28,7 +28,10 @@ if (!fs.existsSync(presetDir)) {
 
 const outputPath = path.resolve(__dirname, "../lib/preferences/theme.ts");
 
-const files = fs.readdirSync(presetDir).filter((file) => file.endsWith(".css"));
+const files = fs
+  .readdirSync(presetDir)
+  .filter((file) => file.endsWith(".css"))
+  .sort();
 
 if (files.length === 0) {
   console.warn("⚠️ No preset CSS files found. Only default preset will be included.");
@@ -52,7 +55,8 @@ const presets = files.map((file) => {
   const value = valueMatch?.[1]?.trim() ?? file.replace(".css", "");
 
   const lightPrimaryMatch = content.match(/:root\[data-theme-preset="[^"]*"\][\s\S]*?--primary:\s*([^;]+);/);
-  const darkPrimaryMatch = content.match(/\.dark:root\[data-theme-preset="[^"]*"\][\s\S]*?--primary:\s*([^;]+);/);
+  // Presets use either `.dark:root[...]` or `.dark[...]`.
+  const darkPrimaryMatch = content.match(/\.dark(?::root)?\[data-theme-preset="[^"]*"\][\s\S]*?--primary:\s*([^;]+);/);
 
   const primary = {
     light: lightPrimaryMatch?.[1]?.trim() ?? "",

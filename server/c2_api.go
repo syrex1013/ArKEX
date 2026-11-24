@@ -2,15 +2,19 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Autumn-27/artex/egress/mullvad"
@@ -376,22 +380,16 @@ func (s *Server) mullvadStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-// mullvadEgressProbe is the cached public-IP observation shared by navbar
-// polls; the outbound check runs at most once per minute.
-var mullvadEgressCache struct {
-	mu       sync.Mutex
-	at       time.Time
-	ip       string
-	exitHost string
-	tunneled bool
-}
-
-// GET /api/mullvad/egress — compact navbar indicator payload: tunnel state
-// plus the current public egress IP (am.i.mullvad.net, cached 60s).
+// GET /api/mullvad/egress — public IP observed through the current task route.
 func (s *Server) mullvadEgress(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	out := s.mullvadClient().Status()
 	out["mode_setting"] = s.m.MullvadMode()
-	out["task_egress_blocked"] = s.m.TaskEgressBlocked()
+	proxy := s.m.EffectiveTaskProxyURL()
+	out["task_egress_blocked"] = proxy == blockedProxyURL
+	out["global_proxy_set"] = s.m.GlobalProxy() != ""
+	out["egress_ip"] = ""
+	out["egress_tunneled"] = false
 	if wgkernel.IsUp() {
 		out["up"] = true
 		out["mode"] = "kernel"
@@ -401,37 +399,76 @@ func (s *Server) mullvadEgress(w http.ResponseWriter, r *http.Request) {
 		out["mode"] = "netstack"
 	}
 
-	mullvadEgressCache.mu.Lock()
-	fresh := time.Since(mullvadEgressCache.at) < time.Minute
-	ip, host, tunneled := mullvadEgressCache.ip, mullvadEgressCache.exitHost, mullvadEgressCache.tunneled
-	mullvadEgressCache.mu.Unlock()
-	if !fresh {
-		ip, host, tunneled = "", "", false
-		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://am.i.mullvad.net/json", nil)
-		if err == nil {
-			if resp, err := http.DefaultClient.Do(req); err == nil {
-				defer resp.Body.Close()
-				var payload struct {
-					IP                    string `json:"ip"`
-					MullvadExitIPHostname string `json:"mullvad_exit_ip_hostname"`
-					MullvadExitIP         bool   `json:"mullvad_exit_ip"`
-				}
-				if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&payload) == nil {
-					ip, host, tunneled = payload.IP, payload.MullvadExitIPHostname, payload.MullvadExitIP
-					mullvadEgressCache.mu.Lock()
-					mullvadEgressCache.at, mullvadEgressCache.ip = time.Now(), ip
-					mullvadEgressCache.exitHost, mullvadEgressCache.tunneled = host, tunneled
-					mullvadEgressCache.mu.Unlock()
-				}
-			}
+	if proxy != blockedProxyURL {
+		var caPath string
+		if recorder := s.m.Traffic(); recorder != nil && proxy == recorder.ProxyAddr() {
+			caPath = s.m.ProxyCACert()
+		}
+		exit := probePublicEgress(r.Context(), proxy, caPath, "https://am.i.mullvad.net/json")
+		// A routing change during the lookup invalidates the measurement.
+		if proxy == s.m.EffectiveTaskProxyURL() {
+			out["egress_ip"] = exit.IP
+			out["egress_relay"] = exit.Relay
+			out["egress_tunneled"] = exit.Mullvad
 		}
 	}
-	out["egress_ip"] = ip
-	out["egress_relay"] = host
-	out["egress_tunneled"] = tunneled
 	writeJSON(w, 200, out)
+}
+
+type publicEgress struct {
+	IP      string `json:"ip"`
+	Relay   string `json:"mullvad_exit_ip_hostname"`
+	Mullvad bool   `json:"mullvad_exit_ip"`
+}
+
+func probePublicEgress(ctx context.Context, proxy, caPath, endpoint string) publicEgress {
+	transport := &http.Transport{DisableKeepAlives: true}
+	if proxy != "" {
+		proxyURL, err := url.Parse(proxy)
+		if err != nil || proxyURL.Host == "" {
+			return publicEgress{}
+		}
+		if proxyURL.Hostname() == "0.0.0.0" {
+			proxyURL.Host = "127.0.0.1:" + proxyURL.Port()
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	if caPath != "" {
+		pem, err := os.ReadFile(caPath)
+		if err != nil {
+			return publicEgress{}
+		}
+		roots, err := x509.SystemCertPool()
+		if err != nil {
+			return publicEgress{}
+		}
+		if !roots.AppendCertsFromPEM(pem) {
+			return publicEgress{}
+		}
+		transport.TLSClientConfig = &tls.Config{RootCAs: roots}
+	}
+	client := http.Client{
+		Transport:     transport,
+		Timeout:       6 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return publicEgress{}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return publicEgress{}
+	}
+	defer resp.Body.Close()
+	var exit publicEgress
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&exit) != nil {
+		return publicEgress{}
+	}
+	if _, err := netip.ParseAddr(exit.IP); err != nil {
+		return publicEgress{}
+	}
+	return exit
 }
 
 // suppress unused import when ports change

@@ -297,8 +297,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			log.Printf("[retester] seed: %v", err)
 		}
 		go s.evidenceStore().RunGC(s.ctx)
-		s.seedPythonInterpreter()     // custom script tool: detect the python interpreter at boot and store it (only when empty)
-		go newScheduler(s).Run(s.ctx) // P3 trigger scheduling (scheduled/finding/goal events), custom agents only
+		s.seedPythonInterpreter() // custom script tool: detect the python interpreter at boot and store it (only when empty)
+		if os.Getenv("ARTEX_SKIP_STARTUP_AUTOMATION") != "1" {
+			go newScheduler(s).Run(s.ctx)
+		}
 		// Vulnerability IM push delivery engine. Sits beside the Scheduler but independent: push latency demands (3s)
 		// differ from the triggers' business cadence, and neither's failures drag the other down — a stuck push must not affect agent triggers.
 		go newNotifier(s).Run(s.ctx)
@@ -329,9 +331,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	}
 	// Fill the tool cache for any enabled MCP that has none yet (notably the
 	// seeded browser MCP on first run). Async so it never blocks startup.
-	go s.discoverEmptyMCPsOnStartup()
-	s.restoreTaskRuntimes()
-	go s.reconcileConcurrency()
+	if os.Getenv("ARTEX_SKIP_STARTUP_AUTOMATION") == "1" {
+		m.LoadExisting()
+	} else {
+		go s.discoverEmptyMCPsOnStartup()
+		s.restoreTaskRuntimes()
+		go s.reconcileConcurrency()
+	}
 	s.startTaskArchiveWorker()
 	s.wireInterceptReviewer() // LLM fallback approval: commands that hit no interception rule go to the model for judgment
 	// Watchdog-driven wg session changes rebuild the agents (their transports
@@ -1177,24 +1183,14 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	}
 	out["llm_configured"] = s.engine.ReadyFor(t)
 
-	st, _ := t.Store.Stats()
+	st, inFlight, goalsMet, err := t.Store.StatsWithStateCounts(r.Context())
+	if err != nil {
+		writeErr(w, 500, "task stats unavailable")
+		return
+	}
 	out["exploration"] = st
 
-	// per-task running state + heartbeat (distinct from "LLM configured").
-	intents, _ := t.Store.ListByKind(db.KindIntent, 100000)
-	inFlight := 0
-	for _, in := range intents {
-		if in.State == "running" {
-			inFlight++
-		}
-	}
-	goals, _ := t.Store.ListByKind(db.KindGoal, 10000)
-	goalsMet := 0
-	for _, g := range goals {
-		if g.State == "met" {
-			goalsMet++
-		}
-	}
+	// Per-task running state and heartbeat.
 	last := s.engine.LastActivity(t.ID)
 	paused := s.engine.IsPaused(t.ID)
 	activeCalls := s.engine.ActiveLLMCalls(t.ID)
@@ -1224,7 +1220,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		"llm_in_flight": activeCalls,
 		"last_activity": last,
 		"stalled":       stalled,
-		"goals_total":   len(goals),
+		"goals_total":   st[db.KindGoal],
 		"goals_met":     goalsMet,
 	}
 	writeJSON(w, 200, out)
@@ -2427,7 +2423,12 @@ func (s *Server) findingStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	st, err := s.m.pg.FindingStats(engagementID)
+	var st *db.FindingStats
+	if r.URL.Query().Get("summary") == "1" {
+		st, err = s.m.pg.FindingStatsSummary(r.Context(), engagementID)
+	} else {
+		st, err = s.m.pg.FindingStats(engagementID)
+	}
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return

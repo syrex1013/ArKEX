@@ -1087,6 +1087,7 @@ export interface MullvadEgress {
   interface: string;
   mode?: string; // "kernel" | "netstack" when a tunnel is up
   mode_setting?: string; // ""/"auto" | "kernel" | "netstack"
+  global_proxy_set?: boolean;
   task_egress_blocked?: boolean; // enabled without a healthy tunnel → fail-closed
   egress_ip: string; // public IP via am.i.mullvad.net ("" when the probe failed)
   egress_relay?: string; // Mullvad exit hostname, e.g. pl-waw-wg-202

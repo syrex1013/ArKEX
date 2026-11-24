@@ -1,10 +1,20 @@
 # Local ArKex override: avoid clashing with a sibling ARTEX stack on :8787.
 # Usage:
 #   COMPOSE_PROJECT_NAME=arkex-local docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+x-log-rotation: &log-rotation
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
+  postgres:
+    logging: *log-rotation
   artex:
+    logging: *log-rotation
     ports: !override
       - "127.0.0.1:8797:8787"
       - "127.0.0.1:8798:8788"
     environment:
       ARTEX_BIND_ADDR: "0.0.0.0"
+      ARTEX_SKIP_STARTUP_AUTOMATION: ${ARTEX_SKIP_STARTUP_AUTOMATION:-}

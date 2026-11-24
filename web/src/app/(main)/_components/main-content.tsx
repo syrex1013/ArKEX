@@ -20,7 +20,7 @@ import { MullvadIndicator } from "./sidebar/mullvad-indicator";
 import { SearchDialog } from "./sidebar/search-dialog";
 import { ThemeSwitcher } from "./sidebar/theme-switcher";
 
-// Task detail pages stay as-is: they bring their own header/Tabs and padding, so no extra global header or padding is stacked here.
+// Task detail pages bring their own navigation and padding.
 function isFullBleed(pathname: string) {
   const p = (() => {
     try {
@@ -89,7 +89,7 @@ export function MainContent({ children }: { children: ReactNode }) {
       {updateBanner}
       <header
         className={cn(
-          "flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12",
+          "sticky top-0 z-50 flex h-12 shrink-0 items-center gap-2 border-b bg-background transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12",
           "[html[data-navbar-style=sticky]_&]:sticky [html[data-navbar-style=sticky]_&]:top-0 [html[data-navbar-style=sticky]_&]:z-50 [html[data-navbar-style=sticky]_&]:overflow-hidden [html[data-navbar-style=sticky]_&]:rounded-t-[inherit] [html[data-navbar-style=sticky]_&]:bg-background/50 [html[data-navbar-style=sticky]_&]:backdrop-blur-md",
         )}
       >

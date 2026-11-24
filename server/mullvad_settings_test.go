@@ -3,6 +3,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -170,5 +173,30 @@ func TestEffectiveTaskProxyURL(t *testing.T) {
 	}
 	if !mEnabled.TaskEgressBlocked() {
 		t.Fatal("TaskEgressBlocked must report true while blocked")
+	}
+}
+
+func TestPublicEgressUsesConfiguredProxy(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"ip":"192.0.2.1"}`)
+	}))
+	defer target.Close()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.String() != target.URL+"/" {
+			t.Errorf("proxy request = %s", r.URL)
+		}
+		fmt.Fprint(w, `{"ip":"2001:db8::1","mullvad_exit_ip":true,"mullvad_exit_ip_hostname":"test-relay"}`)
+	}))
+	defer proxy.Close()
+
+	if direct := probePublicEgress(t.Context(), "", "", target.URL); direct.IP != "192.0.2.1" || direct.Mullvad {
+		t.Fatalf("direct probe = %+v", direct)
+	}
+	if proxied := probePublicEgress(t.Context(), proxy.URL, "", target.URL); proxied.IP != "2001:db8::1" || !proxied.Mullvad {
+		t.Fatalf("proxied probe = %+v", proxied)
+	}
+	proxy.Close()
+	if failed := probePublicEgress(t.Context(), proxy.URL, "", target.URL); failed.IP != "" {
+		t.Fatalf("failed proxy probe fell back to direct = %+v", failed)
 	}
 }

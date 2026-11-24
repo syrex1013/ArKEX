@@ -312,7 +312,27 @@ function compareTasks(left: Task, right: Task, field: TaskSortField, direction: 
 }
 
 export default function TasksPage() {
+  const [engagementSelection] = useEngagementSelection();
   const [activeTab, setActiveTab] = React.useState("current");
+  return (
+    <TasksPageContent
+      key={engagementSelection}
+      engagementSelection={engagementSelection}
+      activeTab={activeTab}
+      setActiveTab={setActiveTab}
+    />
+  );
+}
+
+function TasksPageContent({
+  engagementSelection,
+  activeTab,
+  setActiveTab,
+}: {
+  engagementSelection: string;
+  activeTab: string;
+  setActiveTab: (tab: string) => void;
+}) {
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [categories, setCategories] = React.useState<TaskCategory[]>([]);
   const [categoriesLoaded, setCategoriesLoaded] = React.useState(false);
@@ -332,7 +352,6 @@ export default function TasksPage() {
   const [nowSec, setNowSec] = React.useState(() => Math.floor(Date.now() / 1000));
   const [batchControlling, setBatchControlling] = React.useState<"pause" | "resume" | null>(null);
   const [movingCategory, setMovingCategory] = React.useState(false);
-  const [engagementSelection] = useEngagementSelection();
 
   React.useEffect(() => {
     const raw = getLocalStorageValue(TASK_FILTER_PREFERENCE_KEY);
@@ -1071,7 +1090,7 @@ export default function TasksPage() {
         </Card>
       </TabsContent>
       <TabsContent value="archived">
-        <TaskArchivesPanel onChanged={load} />
+        <TaskArchivesPanel onChanged={load} engagementId={engagementFilter ?? undefined} />
       </TabsContent>
     </Tabs>
   );
@@ -1526,7 +1545,7 @@ function TaskControlButton({
 }) {
   const [pending, setPending] = React.useState(false);
   const action = taskControlAction(task.status);
-  const label = action === "resume" ? t("Resume task") : t("Pause task");
+  const label = action === "resume" ? t("Resume task") : t("Stop task");
   return (
     <Button
       size="icon"
@@ -1748,7 +1767,7 @@ function ArchiveDeleteDialog({
   );
 }
 
-function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
+function TaskArchivesPanel({ onChanged, engagementId }: { onChanged: () => void; engagementId?: string }) {
   const [archives, setArchives] = React.useState<TaskArchive[]>([]);
   const [query, setQuery] = React.useState("");
   const [stateFilter, setStateFilter] = React.useState("all");
@@ -1762,6 +1781,7 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
   const load = React.useCallback(async () => {
     try {
       const result = await api.taskArchives({
+        engagementId,
         page,
         size: pageSize,
         q: query.trim(),
@@ -1790,7 +1810,7 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
     } finally {
       setLoading(false);
     }
-  }, [onChanged, page, pageSize, query, stateFilter]);
+  }, [engagementId, onChanged, page, pageSize, query, stateFilter]);
 
   React.useEffect(() => {
     void load();

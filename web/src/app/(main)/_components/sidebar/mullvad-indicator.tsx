@@ -2,72 +2,74 @@
 
 import * as React from "react";
 
-import { ShieldCheck, ShieldX } from "lucide-react";
+import { Globe } from "lucide-react";
 
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { t } from "@/i18n";
 import { api } from "@/lib/api";
+import { egressStatus } from "@/lib/egress-status";
+import { setVisibleInterval } from "@/lib/polling";
 import type { MullvadEgress } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-// Compact navbar indicator: Mullvad tunnel state plus the public egress IP.
-// The backend caches the outbound IP probe for 60s, so a 60s poll is cheap.
 export function MullvadIndicator() {
-  const [egress, setEgress] = React.useState<MullvadEgress | null>(null);
+  const [egress, setEgress] = React.useState<MullvadEgress>();
+  const [unreachable, setUnreachable] = React.useState(false);
 
   React.useEffect(() => {
     let alive = true;
+    let pending: Promise<void> | undefined;
     const load = () => {
-      api
+      pending ??= api
         .mullvadEgress()
-        .then((e) => alive && setEgress(e))
-        .catch(() => undefined);
+        .then((result) => {
+          if (!alive) return;
+          setEgress(result);
+          setUnreachable(false);
+        })
+        .catch(() => {
+          if (alive) setUnreachable(true);
+        })
+        .finally(() => {
+          pending = undefined;
+        });
+      return pending;
     };
-    load();
-    const stop = setInterval(load, 60000);
+    void load();
+    const stop = setVisibleInterval(load, 60_000);
     return () => {
       alive = false;
-      clearInterval(stop);
+      stop();
     };
   }, []);
 
-  if (!egress) return null;
-  const up = !!egress.up && !egress.task_egress_blocked;
-  const tunneled = up && egress.egress_tunneled;
-  const label = up
-    ? tunneled
-      ? t("Mullvad · {ip}", { ip: egress.egress_ip || "…" })
-      : t("Mullvad up · egress {ip}", { ip: egress.egress_ip || "…" })
-    : egress.task_egress_blocked
-      ? t("Mullvad · egress blocked")
-      : t("Mullvad down");
+  const { route, state, ip } = egressStatus(egress, unreachable);
+  const routeLabel = route === "mullvad" ? t("Mullvad") : route === "proxy" ? t("Proxy") : t("Egress");
+  const stateLabel = {
+    checking: t("Checking…"),
+    working: t("Working"),
+    failed: t("Not working"),
+    off: t("Off"),
+    unverified: t("Health unverified"),
+    unavailable: t("Status unavailable"),
+  }[state];
+  const label = [routeLabel, stateLabel, ip].filter(Boolean).join(" · ");
+  const description = [label, state === "working" && egress?.egress_relay].filter(Boolean).join(" · ");
 
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span
-            className={cn(
-              "flex items-center gap-1.5 font-medium text-xs tabular-nums",
-              tunneled ? "text-emerald-600 dark:text-emerald-400" : up ? "text-muted-foreground" : "text-destructive",
-            )}
-            aria-label={label}
-          >
-            {tunneled ? <ShieldCheck className="size-3.5" /> : <ShieldX className="size-3.5" />}
-            <span className="hidden sm:inline">{label}</span>
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">
-          <p>
-            {t("WireGuard {mode} · interface {iface}", {
-              mode: egress.mode || egress.mode_setting || "-",
-              iface: egress.interface || "-",
-            })}
-          </p>
-          {egress.egress_relay ? <p>{t("Relay {relay}", { relay: egress.egress_relay })}</p> : null}
-          <p>{label}</p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <span
+      className="inline-flex max-w-44 items-center gap-1.5 rounded-full border bg-background px-2 py-0.5 font-medium text-xs tabular-nums sm:max-w-none"
+      title={description}
+    >
+      <Globe
+        className={cn(
+          "size-3.5 shrink-0",
+          state === "working" && "text-emerald-600 dark:text-emerald-400",
+          state === "failed" && "text-destructive",
+          state === "unverified" && "text-amber-600 dark:text-amber-400",
+        )}
+        aria-hidden
+      />
+      <span className="truncate">{label}</span>
+    </span>
   );
 }

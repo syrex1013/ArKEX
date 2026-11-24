@@ -30,6 +30,7 @@ import type {
   Agent,
   ConvTokenSummary,
   Finding,
+  FindingStats,
   InterceptPending,
   LLMProfile,
   MCPServer,
@@ -137,6 +138,7 @@ export default function DashboardPage() {
   // data state
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [findings, setFindings] = React.useState<Finding[]>([]);
+  const [findingCounts, setFindingCounts] = React.useState<FindingStats | null>(null);
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [pending, setPending] = React.useState<InterceptPending[]>([]);
@@ -194,8 +196,7 @@ export default function DashboardPage() {
       if (loading) return;
       loading = true;
       try {
-        const [findings, stats, settings, pending, activity, tokens, conversationTokens] = await Promise.all([
-          api.findings(undefined, engagementId),
+        const [stats, settings, pending, activity, tokens, conversationTokens] = await Promise.all([
           api.stats(),
           api.settings(),
           api.interceptPending(),
@@ -204,7 +205,6 @@ export default function DashboardPage() {
           api.conversationTokens(),
         ]);
         if (!alive) return;
-        setFindings(findings);
         setStats(stats);
         setSettings(settings);
         setPending(pending);
@@ -225,12 +225,46 @@ export default function DashboardPage() {
     };
   }, [engagementId]);
 
+  React.useEffect(() => {
+    let alive = true;
+    setFindings([]);
+    setFindingCounts(null);
+
+    function poll<T>(delay: number, fetchData: () => Promise<T>, update: (value: T) => void) {
+      let loading = false;
+      const load = async () => {
+        if (loading) return;
+        loading = true;
+        try {
+          const value = await fetchData();
+          if (alive) update(value);
+        } catch {
+          // Preserve the last successful value until the next refresh.
+        } finally {
+          loading = false;
+        }
+      };
+      void load();
+      return setVisibleInterval(load, delay);
+    }
+
+    const stopRecent = poll(15000, () => api.findingsPage({ page: 1, pageSize: 8, engagement: engagementId }), (page) => setFindings(page.items));
+    const stopCounts = poll(15000, () => api.findingStats(engagementId, true), setFindingCounts);
+    const stopUsage = poll(60000, () => api.usageStats(365), setUsageStats);
+    return () => {
+      alive = false;
+      stopRecent();
+      stopCounts();
+      stopUsage();
+    };
+  }, [engagementId]);
+
   // slow poll: traffic, assets, system-static (every 15s)
   React.useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage] = await Promise.all([
+        const [traf, counts, agentList, mcpList, skillList, toolList, profileList] = await Promise.all([
           api.traffic(0, 50, "", "", "", { engagement: engagementId }),
           api.assetCounts(),
           api.agents(),
@@ -238,7 +272,6 @@ export default function DashboardPage() {
           api.skills(),
           api.tools(),
           api.llmProfiles(),
-          api.usageStats(365),
         ]);
         if (!alive) return;
         setTraffic(traf.exchanges ?? []);
@@ -248,7 +281,6 @@ export default function DashboardPage() {
         setSkills(skillList);
         setTools(toolList);
         setLLMProfiles(profileList);
-        setUsageStats(usage);
       } catch {
         /* transient errors */
       }
@@ -269,13 +301,7 @@ export default function DashboardPage() {
     return m;
   }, [tasks]);
 
-  const findingsBySev = React.useMemo(() => {
-    const m = { critical: 0, high: 0, medium: 0, low: 0 };
-    for (const f of findings) {
-      if (f.severity in m) m[f.severity as keyof typeof m]++;
-    }
-    return m;
-  }, [findings]);
+  const findingsBySev = findingCounts ?? { critical: 0, high: 0, medium: 0, low: 0 };
 
   const sortedTasks = React.useMemo(
     () =>
@@ -541,7 +567,7 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <BugIcon className="size-3" /> {t("Confirmed findings")}
             </div>
-            <div className="text-2xl font-semibold tabular-nums">{findings.length}</div>
+            <div className="text-2xl font-semibold tabular-nums">{findingCounts?.total ?? 0}</div>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2.5 text-[10px]">
             <span className="text-rose-500">{t("Critical {count}", { count: findingsBySev.critical })}</span>

@@ -136,7 +136,12 @@ func TestTaskArchiveDatabaseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var companyID, llmProfileID int64
+	var companyID, llmProfileID, engagementID int64
+	engagementKey := fmt.Sprintf("archive-engagement-%d", task.ID)
+	if err := d.QueryRow(`INSERT INTO engagements(name,nkey) VALUES($1,$1) RETURNING id`, engagementKey).Scan(&engagementID); err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM engagements WHERE id=$1`, engagementID)
 	if err := d.QueryRow(`INSERT INTO companies(name,nkey) VALUES($1,$2) RETURNING id`,
 		fmt.Sprintf("archive-company-%d", task.ID), fmt.Sprintf("archive-company-%d", task.ID)).Scan(&companyID); err != nil {
 		t.Fatal(err)
@@ -147,7 +152,7 @@ func TestTaskArchiveDatabaseRoundTrip(t *testing.T) {
 	}
 	exhaustedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	chainCreatedAt := exhaustedAt.Add(-time.Hour)
-	if _, err := d.Exec(`UPDATE tasks SET company_id=$2,llm_profile_id=$3,active_llm_profile_id=$3 WHERE id=$1`, task.ID, companyID, llmProfileID); err != nil {
+	if _, err := d.Exec(`UPDATE tasks SET company_id=$2,llm_profile_id=$3,active_llm_profile_id=$3,engagement_id=$4 WHERE id=$1`, task.ID, companyID, llmProfileID, engagementID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Exec(`INSERT INTO task_llm_profiles(task_id,profile_id,position,status,last_error,exhausted_at,created_at,updated_at)
@@ -227,6 +232,14 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	}
 	if live, err := d.GetTask(task.ID); err != nil || live != nil {
 		t.Fatalf("archived task must be hidden, got %+v, %v", live, err)
+	}
+	matching, err := d.ListTaskArchives("", ArchiveReady, engagementID, 1, 1)
+	if err != nil || matching.Total != 1 || len(matching.Items) != 1 || matching.Items[0].ID != archive.ID {
+		t.Fatalf("matching engagement archive page = %+v, %v", matching, err)
+	}
+	missing, err := d.ListTaskArchives("", ArchiveReady, -1, 1, 1)
+	if err != nil || missing.Total != 0 || len(missing.Items) != 0 {
+		t.Fatalf("nonmatching engagement archive page = %+v, %v", missing, err)
 	}
 	var nodes, assets, usage int
 	if err := d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&nodes); err != nil {

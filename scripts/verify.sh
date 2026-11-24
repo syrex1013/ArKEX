@@ -120,18 +120,17 @@ if want_go; then
 fi
 
 if want_web; then
-  require_cmd npm
-  require_cmd npx
+  require_cmd bun
 
-  if [ ! -d web/node_modules ] || [ web/package-lock.json -nt web/node_modules ]; then
-    run_step "npm ci" npm --prefix web ci
+  if [ ! -d web/node_modules ] || [ web/bun.lock -nt web/node_modules ]; then
+    run_step "bun install" bash -c 'cd web && bun install --frozen-lockfile'
   fi
-  run_step "tsc --noEmit" bash -c 'cd web && npx tsc --noEmit'
-  run_step "web polling tests" bash -c 'cd web && npm run test:polling'
-  run_step "web replay tests" bash -c 'cd web && npm run test:replay'
-  run_step "web upload tests" bash -c 'cd web && npm run test:upload'
+  run_step "tsc --noEmit" bash -c 'cd web && bunx tsc --noEmit'
+  run_step "web polling tests" bash -c 'cd web && bun run test:polling'
+  run_step "web replay tests" bash -c 'cd web && bun run test:replay'
+  run_step "web upload tests" bash -c 'cd web && bun run test:upload'
   if [ "$FULL" -eq 1 ]; then
-    run_step "web static build" bash -c 'cd web && npm run build:static'
+    run_step "web static build" bash -c 'cd web && bun --bun run build:static'
   fi
 fi
 

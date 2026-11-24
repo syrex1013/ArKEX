@@ -438,7 +438,16 @@ func validateArchivePath(dataDir, candidate string) error {
 func (s *Server) listTaskArchives(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
-	result, err := s.m.pg.ListTaskArchives(r.URL.Query().Get("q"), r.URL.Query().Get("state"), page, size)
+	var engagementID int64
+	if raw := r.URL.Query().Get("engagement_id"); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id < 0 {
+			writeErr(w, 400, "invalid engagement_id")
+			return
+		}
+		engagementID = id
+	}
+	result, err := s.m.pg.ListTaskArchives(r.URL.Query().Get("q"), r.URL.Query().Get("state"), engagementID, page, size)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return

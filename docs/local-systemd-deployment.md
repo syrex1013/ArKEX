@@ -59,7 +59,7 @@ sudo chmod 0600 /opt/artex/config.json
 
 ## Build and install
 
-The binary embeds the UI when built with `-tags embedui`. To rebuild the UI from a source checkout, run `npm ci` and `npm run build:static` in `web/`, create the parent directory with `mkdir -p server/webui`, and replace `server/webui/dist` with `web/out`. Build the binary with:
+The binary embeds the UI when built with `-tags embedui`. To rebuild the UI from a source checkout, run `bun install --frozen-lockfile` and `bun --bun run build:static` in `web/`, create the parent directory with `mkdir -p server/webui`, and replace `server/webui/dist` with `web/out`. Build the binary with:
 
 ```bash
 CGO_ENABLED=0 go build -tags embedui -trimpath -o artex ./cmd/artex

@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t } from "@/i18n";
@@ -156,11 +157,19 @@ export default function LogsPage() {
 
   const filtered = React.useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return lines.filter(
-      (l) =>
-        (level === "all" || l.level === level) &&
-        (!needle || l.text.toLowerCase().includes(needle) || l.tag.toLowerCase().includes(needle)),
-    );
+    const rows = new Map<number, { line: LogLine; count: number }>();
+    const mcp = new Map<string, { seq: number; count: number }>();
+    for (const line of lines) {
+      if (level !== "all" && line.level !== level) continue;
+      if (needle && !line.text.toLowerCase().includes(needle) && !line.tag.toLowerCase().includes(needle)) continue;
+      const name = line.text.match(/\[mcp\] (\S+) connect failed:/)?.[1];
+      const previous = name ? mcp.get(name) : undefined;
+      if (previous) rows.delete(previous.seq);
+      const count = (previous?.count ?? 0) + 1;
+      if (name) mcp.set(name, { seq: line.seq, count });
+      rows.set(line.seq, { line, count });
+    }
+    return [...rows.values()];
   }, [lines, q, level]);
 
   React.useEffect(() => {
@@ -247,7 +256,7 @@ export default function LogsPage() {
           {filtered.length === 0 ? (
             <p className="py-10 text-center text-muted-foreground">{t("No logs yet.")}</p>
           ) : (
-            filtered.map((l) => {
+            filtered.map(({ line: l, count }) => {
               const body =
                 l.tag && l.text.startsWith("[" + l.tag + "]") ? l.text.slice(l.tag.length + 2).trimStart() : l.text;
               return (
@@ -258,6 +267,8 @@ export default function LogsPage() {
                     <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-foreground/70">{l.tag}</span>
                   )}
                   <span className={cn("min-w-0 whitespace-pre-wrap break-words", levelTone[l.level])}>{body}</span>
+                  {/\b402\b.*\b(?:credit|payment|quota)\b/i.test(body) && <Badge variant="outline">{t("Provider credit issue")}</Badge>}
+                  {count > 1 && <Badge variant="outline">×{count}</Badge>}
                 </div>
               );
             })

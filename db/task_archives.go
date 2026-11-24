@@ -200,7 +200,7 @@ func (d *DB) GetTaskArchiveByTask(taskID int64) (*TaskArchive, error) {
 	return item, err
 }
 
-func (d *DB) ListTaskArchives(search, state string, page, size int) (TaskArchivePage, error) {
+func (d *DB) ListTaskArchives(search, state string, engagementID int64, page, size int) (TaskArchivePage, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -210,14 +210,15 @@ func (d *DB) ListTaskArchives(search, state string, page, size int) (TaskArchive
 	search = strings.TrimSpace(search)
 	state = strings.TrimSpace(state)
 	where := `WHERE ($1='' OR task_id::text ILIKE '%'||$1||'%' OR task_name ILIKE '%'||$1||'%' OR task_description ILIKE '%'||$1||'%')
-AND ($2='' OR state=$2)`
+AND ($2='' OR state=$2)
+AND ($3=0 OR EXISTS (SELECT 1 FROM tasks WHERE tasks.id=task_archives.task_id AND tasks.engagement_id=$3))`
 	var out TaskArchivePage
 	out.Page, out.Size = page, size
-	if err := d.QueryRow(`SELECT count(*) FROM task_archives `+where, search, state).Scan(&out.Total); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM task_archives `+where, search, state, engagementID).Scan(&out.Total); err != nil {
 		return out, err
 	}
 	rows, err := d.Query(`SELECT `+taskArchiveCols+` FROM task_archives `+where+`
-ORDER BY COALESCE(archived_at, requested_at) DESC, id DESC LIMIT $3 OFFSET $4`, search, state, size, (page-1)*size)
+ORDER BY COALESCE(archived_at, requested_at) DESC, id DESC LIMIT $4 OFFSET $5`, search, state, engagementID, size, (page-1)*size)
 	if err != nil {
 		return out, err
 	}

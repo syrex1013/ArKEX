@@ -376,7 +376,7 @@ after a backoff. To keep it in the background: `nohup ./start.sh >artex.log 2>&1
 #### Verifying a release
 
 Each release attaches `SHA256SUMS` and a CycloneDX SBOM, `artex-<tag>.cdx.json` (Go modules in the
-linux/amd64 binary, the frontend `package-lock.json`, `go.mod`/`go.sum`), next to the zips. The zips
+linux/amd64 binary, the frontend `bun.lock` / `node_modules`, `go.mod`/`go.sum`), next to the zips. The zips
 also carry a GitHub build provenance attestation. Releases published before this was added have
 neither.
 
@@ -387,8 +387,10 @@ gh attestation verify <zip> --repo syrex1013/ArKEX   # built by this repository'
 
 ### Option 4: build the single binary from source
 
+Requires **Go** (>= the floor in `go.mod`) and **Bun** (https://bun.sh) for the frontend.
+
 ```bash
-cd web && npm ci && npm run build:static && cd ..
+cd web && bun install --frozen-lockfile && bun --bun run build:static && cd ..
 cp -r web/out server/webui/dist
 CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 ./start.sh
@@ -668,7 +670,7 @@ cp -r <extracted dir>/skills ./ && cp <extracted dir>/artex ./
 
 ```bash
 git pull
-cd web && npm ci && npm run build:static && cd ..
+cd web && bun install --frozen-lockfile && bun --bun run build:static && cd ..
 cp -r web/out server/webui/dist
 CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 # restart ./start.sh
@@ -683,10 +685,10 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 ```
 
 - Backend: `go run ./cmd/artex` (without `-tags embedui`, the frontend is not embedded)
-- Frontend: `cd web && npm run dev` (`/api` is reverse-proxied to the backend, with hot reload)
+- Frontend: `cd web && bun run dev` (`/api` is reverse-proxied to the backend, with hot reload)
 - Tests: `go test ./...`
 - Reproduce all CI checks locally: `./scripts/verify.sh` (add `--full` for `-race` and the static web build)
-- Mock preview (no backend): `cd web && NEXT_PUBLIC_MOCK=1 npm run dev`
+- Mock preview (no backend): `cd web && NEXT_PUBLIC_MOCK=1 bun run dev`
 
 ---
 

@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -1404,21 +1405,36 @@ func (s *ExplorationStore) settleIntentClaimResult(id int64, token string, res s
 
 // Stats returns node counts grouped by kind (for dashboard).
 func (s *ExplorationStore) Stats() (map[string]int, error) {
-	rows, err := s.db.Query(`SELECT kind, count(*) FROM exploration_nodes WHERE exploration_id=$1 GROUP BY kind`, s.expID)
+	counts, _, _, err := s.StatsWithStateCounts(context.Background())
+	return counts, err
+}
+
+// StatsWithStateCounts computes dashboard counters without fetching node payloads.
+func (s *ExplorationStore) StatsWithStateCounts(ctx context.Context) (map[string]int, int, int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, count(*),
+		count(*) FILTER (WHERE state='running'), count(*) FILTER (WHERE state='met')
+		FROM exploration_nodes WHERE exploration_id=$1 GROUP BY kind`, s.expID)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	defer rows.Close()
 	out := map[string]int{}
+	var inFlight, goalsMet int
 	for rows.Next() {
-		var k string
-		var c int
-		if err := rows.Scan(&k, &c); err != nil {
-			return nil, err
+		var kind string
+		var total, running, met int
+		if err := rows.Scan(&kind, &total, &running, &met); err != nil {
+			return nil, 0, 0, err
 		}
-		out[k] = c
+		out[kind] = total
+		switch kind {
+		case KindIntent:
+			inFlight = running
+		case KindGoal:
+			goalsMet = met
+		}
 	}
-	return out, rows.Err()
+	return out, inFlight, goalsMet, rows.Err()
 }
 
 // --- activity (poll by global id cursor) ---
