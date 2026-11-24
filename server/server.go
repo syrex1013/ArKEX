@@ -730,6 +730,10 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	cached := s.profChatAgents[id]
 	s.profMu.Unlock()
 	if cached != nil {
+		// Same as task bundles: refresh egress on each use so a WireGuard flip
+		// mid-session does not leave chat dialing direct.
+		cached.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+		cached.SetWebSearch(s.m.WebSearchOpts())
 		return cached
 	}
 	prov, cfg, ok := s.providerForProfile(id)
@@ -770,8 +774,13 @@ func (s *Server) invalidateProfileAgents() {
 
 func (s *Server) chatAgentRef() *agent.ChatAgent {
 	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
-	return s.chatAgent
+	ca := s.chatAgent
+	s.cfgMu.Unlock()
+	if ca != nil {
+		ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+		ca.SetWebSearch(s.m.WebSearchOpts())
+	}
+	return ca
 }
 
 func (s *Server) Handler() http.Handler {

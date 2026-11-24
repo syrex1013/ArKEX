@@ -875,6 +875,16 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	s.taskAgentMu.Lock()
 	defer s.taskAgentMu.Unlock()
 	if bundle := s.taskAgents[t.ID]; bundle != nil {
+		// Egress can flip under a live task (global WG / Mullvad up/down). Refresh
+		// proxy + web-search opts on the cached bundle so the next round does not
+		// keep a stale direct dial after the tunnel comes up.
+		proxy, ca := s.m.ProxyAddr(), s.m.ProxyCACert()
+		bundle.wk.SetProxy(proxy, ca)
+		bundle.pl.SetProxy(proxy, ca)
+		bundle.main.SetProxy(proxy, ca)
+		bundle.wk.SetWebSearch(s.webSearchFor("worker"))
+		bundle.pl.SetWebSearch(s.webSearchFor("planner"))
+		bundle.main.SetWebSearch(s.webSearchFor("mainagent"))
 		return bundle
 	}
 	goalRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "goals"}

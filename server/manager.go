@@ -570,15 +570,10 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			log.Printf("[proxy] global proxy %q invalid, ignored: %v", m.globalProxy, err)
 		}
 	}
-	// Enrich probes honor the tunnel too: when Mullvad owns task egress, even
-	// gate-on probes (normally direct to the pinned target) go through the
-	// session proxy — or fail closed when the tunnel is down.
-	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4, func() string {
-		if m.MullvadProxyEnabled() {
-			return m.EffectiveTaskProxyURL()
-		}
-		return ""
-	})
+	// Enrich probes honor the tunnel too: when Mullvad or a global WireGuard
+	// config owns task egress, even gate-on probes (normally direct to the
+	// pinned target) go through the session proxy — or fail closed when down.
+	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4, m.ForcedTaskProxy)
 	// Opt-in Docker sandbox (ARKEX_SANDBOX=1); its egress env follows the proxy.
 	m.sandbox = maybeSandboxManager(dir, proxyAddr)
 	// Mullvad watchdog: whenever the VPN is enabled, keep the WireGuard session
@@ -710,11 +705,13 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 	if on && backend == "tavily" && strings.TrimSpace(tavilyKey) == "" {
 		on = false
 	}
-	if on && m.MullvadProxyEnabled() {
-		// Mullvad owns task egress: web search is task traffic, so it rides the
-		// effective task proxy (tunnel, or fail-closed blocked) — its own
-		// web_search_proxy setting is ignored while Mullvad is enabled.
-		proxy = m.EffectiveTaskProxyURL()
+	if on {
+		// WireGuard tunnel owns task egress (Mullvad or uploaded config): web
+		// search is task traffic, so it rides the forced proxy (tunnel or
+		// fail-closed blocked). Its own web_search_proxy is ignored then.
+		if forced := m.ForcedTaskProxy(); forced != "" {
+			proxy = forced
+		}
 	}
 	o := agent.WebSearchOpts{Enabled: on, Backend: backend, BraveKey: braveKey, TavilyKey: tavilyKey, KeenableKey: keenableKey, Proxy: proxy}
 	if backend == deepSeekWebSearchBackend {
@@ -1021,6 +1018,17 @@ func (m *Manager) TaskEgressBlocked() bool {
 	return m.EffectiveTaskProxyURL() == blockedProxyURL
 }
 
+// ForcedTaskProxy is the proxy URL every task transport must use while a
+// WireGuard tunnel owns egress (Mullvad flag or uploaded global_wg_config),
+// including the fail-closed blocked URL when the tunnel is down. Empty when
+// neither tunnel is configured — callers keep their normal routing.
+func (m *Manager) ForcedTaskProxy() string {
+	if m.MullvadProxyEnabled() || m.GlobalWGConfigured() {
+		return m.EffectiveTaskProxyURL()
+	}
+	return ""
+}
+
 // syncWGProxyEgress repoints the runtime egress paths that read the proxy
 // dynamically: the MITM upstream dialer and the sandbox container env. Agent
 // transports (WebFetch / custom tools / bash env) capture the URL at build
@@ -1215,7 +1223,16 @@ func (m *Manager) startGlobalWG(ctx context.Context) error {
 	conf := m.globalWGConf
 	m.mu.RUnlock()
 	if conf == "" {
-		return fmt.Errorf("global_wg_config not set")
+		// After restart the DB still has the config but the in-memory cache is
+		// empty — load it so the watchdog (and boot sync) can bring the tunnel
+		// back up without an operator re-upload.
+		conf = m.GlobalWGConfigText()
+		if conf == "" {
+			return fmt.Errorf("global_wg_config not set")
+		}
+		m.mu.Lock()
+		m.globalWGConf = conf
+		m.mu.Unlock()
 	}
 	cfg, err := wgproxy.ParseConfig(conf)
 	if err != nil {
@@ -1353,13 +1370,11 @@ func (m *Manager) SetMullvadAddress(addr string) error {
 }
 
 // MCPTaskProxy returns the proxy URL for MCP tool transports — non-empty only
-// while Mullvad owns task egress (healthy tunnel, or fail-closed blocked);
-// otherwise operator-configured MCP integrations keep their own routing.
+// while a WireGuard tunnel owns task egress (Mullvad or uploaded global config;
+// healthy tunnel, or fail-closed blocked). Otherwise operator-configured MCP
+// integrations keep their own routing.
 func (m *Manager) MCPTaskProxy() string {
-	if m.MullvadProxyEnabled() {
-		return m.EffectiveTaskProxyURL()
-	}
-	return ""
+	return m.ForcedTaskProxy()
 }
 
 // MCPTaskCA returns the certificate MCP transports must trust, parallel to

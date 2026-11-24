@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/egress/wgproxy"
 	"github.com/Autumn-27/artex/intercept"
 )
 
@@ -112,6 +114,35 @@ func TestCustomHTTPDirectDialPinned(t *testing.T) {
 	}
 	if _, toolName, input, ok := openTargetRequest(t, g.m.pg, task.ID, key); !ok || toolName != "probe_dial" || !strings.Contains(input, "dial") {
 		t.Fatalf("request at the dial: ok=%v tool=%q input=%s", ok, toolName, input)
+	}
+}
+
+// Uploaded global WireGuard config must force custom http tools through the
+// tunnel (or fail-closed block) the same way Mullvad does — never direct.
+func TestHTTPToolTransportForcedByGlobalWG(t *testing.T) {
+	g := newGateServer(t)
+	direct := httpExec{URL: "http://api.example.com/"}
+	if tr := g.s.httpToolTransport(context.Background(), "probe", direct); tr != nil {
+		t.Fatalf("no tunnel: transport %+v, want nil (direct)", tr)
+	}
+	if err := g.m.pg.SetSetting(settingGlobalWGConfig, "stored"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = g.m.pg.SetSetting(settingGlobalWGConfig, "") })
+	g.m.mu.Lock()
+	g.m.globalWG = wgproxy.NewHealthyTestSession(18102)
+	g.m.mu.Unlock()
+
+	tr := g.s.httpToolTransport(context.Background(), "probe", direct)
+	if tr == nil || tr.Proxy == nil {
+		t.Fatalf("global wg up: transport %+v, want forced proxy", tr)
+	}
+	u, err := tr.Proxy(&http.Request{URL: &url.URL{Scheme: "http", Host: "api.example.com"}})
+	if err != nil || u == nil || u.String() != "http://127.0.0.1:18102" {
+		t.Fatalf("forced proxy = %v (%v), want http://127.0.0.1:18102", u, err)
+	}
+	if got := g.m.ForcedTaskProxy(); got != "http://127.0.0.1:18102" {
+		t.Fatalf("ForcedTaskProxy = %q", got)
 	}
 }
 

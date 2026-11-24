@@ -136,4 +136,10 @@ func TestGlobalWGWatchdogPicksUpStoredConfig(t *testing.T) {
 	if got := s.m.EffectiveTaskProxyURL(); got != blockedProxyURL {
 		t.Fatalf("stored wg config with dead endpoint: egress %q, want fail-closed %q", got, blockedProxyURL)
 	}
+	s.m.mu.RLock()
+	cached := s.m.globalWGConf
+	s.m.mu.RUnlock()
+	if cached == "" {
+		t.Fatal("watchdog must load the DB config into the in-memory cache after restart")
+	}
 }

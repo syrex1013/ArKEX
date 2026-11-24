@@ -606,13 +606,16 @@ func (s *Server) httpToolTransport(ctx context.Context, key string, spec httpExe
 	if tr := s.httpProxyTransport(spec); tr != nil {
 		return tr
 	}
-	// Mullvad owns task egress: a tool without its own proxy still rides the
-	// effective task proxy (tunnel, or fail-closed blocked) — never direct.
-	if s.m != nil && s.m.MullvadProxyEnabled() {
-		if pu, err := url.Parse(s.m.EffectiveTaskProxyURL()); err == nil && pu.Host != "" {
-			tr := &http.Transport{Proxy: http.ProxyURL(pu)}
-			tr.DisableKeepAlives = true
-			return tr
+	// WireGuard tunnel owns task egress (Mullvad or uploaded global config): a
+	// tool without its own proxy still rides the forced proxy (tunnel, or
+	// fail-closed blocked) — never direct.
+	if s.m != nil {
+		if forced := s.m.ForcedTaskProxy(); forced != "" {
+			if pu, err := url.Parse(forced); err == nil && pu.Host != "" {
+				tr := &http.Transport{Proxy: http.ProxyURL(pu)}
+				tr.DisableKeepAlives = true
+				return tr
+			}
 		}
 	}
 	if !intercept.GateOn(ctx) {
