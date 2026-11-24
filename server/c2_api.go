@@ -353,6 +353,7 @@ func (s *Server) rebuildAgentsForEgressChange() {
 		}
 	}
 	s.invalidateProfileAgents()
+	egressLive.Notify()
 }
 
 // GET /api/mullvad/status
@@ -380,14 +381,19 @@ func (s *Server) mullvadStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-// GET /api/mullvad/egress — public IP observed through the current task route.
-func (s *Server) mullvadEgress(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
+// egressPayload is the navbar pill snapshot: tunnel flags + public IP through
+// the current task route. Shared by GET /api/mullvad/egress and the live SSE
+// stream so both surfaces stay byte-identical.
+func (s *Server) egressPayload(ctx context.Context) map[string]any {
 	out := s.mullvadClient().Status()
 	out["mode_setting"] = s.m.MullvadMode()
 	proxy := s.m.EffectiveTaskProxyURL()
 	out["task_egress_blocked"] = proxy == blockedProxyURL
 	out["global_proxy_set"] = s.m.GlobalProxy() != ""
+	wgUp, wgEndpoint, _ := s.m.GlobalWGState()
+	out["global_wg_up"] = wgUp
+	out["global_wg_endpoint"] = wgEndpoint
+	out["global_wg_set"] = s.m.GlobalWGConfigured()
 	out["egress_ip"] = ""
 	out["egress_tunneled"] = false
 	if wgkernel.IsUp() {
@@ -404,7 +410,7 @@ func (s *Server) mullvadEgress(w http.ResponseWriter, r *http.Request) {
 		if recorder := s.m.Traffic(); recorder != nil && proxy == recorder.ProxyAddr() {
 			caPath = s.m.ProxyCACert()
 		}
-		exit := probePublicEgress(r.Context(), proxy, caPath, "https://am.i.mullvad.net/json")
+		exit := probePublicEgress(ctx, proxy, caPath, "https://am.i.mullvad.net/json")
 		// A routing change during the lookup invalidates the measurement.
 		if proxy == s.m.EffectiveTaskProxyURL() {
 			out["egress_ip"] = exit.IP
@@ -412,7 +418,77 @@ func (s *Server) mullvadEgress(w http.ResponseWriter, r *http.Request) {
 			out["egress_tunneled"] = exit.Mullvad
 		}
 	}
-	writeJSON(w, 200, out)
+	return out
+}
+
+// GET /api/mullvad/egress — public IP observed through the current task route.
+func (s *Server) mullvadEgress(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, s.egressPayload(r.Context()))
+}
+
+// GET /api/mullvad/egress/stream — live SSE of egressPayload. Pushes on connect,
+// on every egress route change, and every 60s so the public IP stays fresh.
+func (s *Server) streamMullvadEgress(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, 500, "streaming unsupported")
+		return
+	}
+	tok := extractToken(r)
+	if !s.sessionOK(tok) {
+		writeErr(w, 401, "token is invalid or expired")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ch, unsub := egressLive.Subscribe()
+	defer unsub()
+	send := func() {
+		if !s.sessionOK(tok) {
+			return
+		}
+		b, err := json.Marshal(s.egressPayload(r.Context()))
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}
+	send()
+
+	refresh := time.NewTicker(60 * time.Second)
+	defer refresh.Stop()
+	ping := time.NewTicker(20 * time.Second)
+	defer ping.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+			if !s.sessionOK(tok) {
+				return
+			}
+			send()
+		case <-refresh.C:
+			if !s.sessionOK(tok) {
+				return
+			}
+			send()
+		case <-ping.C:
+			if !s.sessionOK(tok) {
+				return
+			}
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+		}
+	}
 }
 
 type publicEgress struct {

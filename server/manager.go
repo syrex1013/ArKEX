@@ -321,6 +321,14 @@ type Manager struct {
 	// wgAutoDown records a manual Down so the watchdog does not fight the
 	// operator; cleared on Up / re-enable.
 	wgAutoDown bool
+	// globalWG holds the userspace WireGuard session started from the uploaded
+	// global_wg_config (distinct from the Mullvad relay machinery); nil when down.
+	globalWG *wgproxy.Session
+	// globalWGConf caches the stored global_wg_config text so the watchdog can
+	// restart the session without re-reading the secret setting.
+	globalWGConf string
+	// globalWGEndpoint records the resolved endpoint of the running session ("" when down).
+	globalWGEndpoint string
 	// sandbox is the opt-in Docker sandbox manager (ARKEX_SANDBOX=1); nil when off.
 	sandbox *sandbox.Manager
 }
@@ -339,6 +347,11 @@ const (
 	// (http/https/socks5). Empty = direct. Distinct from web_search_proxy (which
 	// only routes the search backend) and the per-profile LLM proxy.
 	settingGlobalProxy = "global_proxy"
+	// settingGlobalWGConfig stores an uploaded WireGuard config (secret setting);
+	// when set, all target traffic tunnels through it and the global proxy above
+	// is bypassed while the session is healthy (fail closed when it is not).
+	settingGlobalWGConfig = "global_wg_config"
+	settingGlobalWGPort   = "global_wg_proxy_port"
 	settingWorkers     = "workers"
 	settingLLMRecord   = "llm_record"
 	// LLM failover (round-robin). Off by default — when on, an agent on the "globally
@@ -923,6 +936,12 @@ func (m *Manager) egressStamp() string {
 		return "tunneled"
 	}
 	m.mu.RLock()
+	gsess := m.globalWG
+	m.mu.RUnlock()
+	if gsess != nil && gsess.Healthy() {
+		return "tunneled"
+	}
+	m.mu.RLock()
 	gp := m.globalProxy
 	m.mu.RUnlock()
 	if gp != "" {
@@ -980,13 +999,26 @@ func (m *Manager) EffectiveTaskProxyURL() string {
 		// at all. The watchdog restarts the session automatically.
 		return blockedProxyURL
 	}
+	// A stored global WireGuard config tunnels all target traffic the same way:
+	// healthy session wins, no healthy session fails closed (never direct).
+	if m.GlobalWGConfigured() {
+		m.mu.RLock()
+		gsess := m.globalWG
+		m.mu.RUnlock()
+		if gsess != nil {
+			if u := gsess.ProxyURL(); u != "" && gsess.Healthy() {
+				return u
+			}
+		}
+		return blockedProxyURL
+	}
 	return m.baseProxyAddr()
 }
 
 // TaskEgressBlocked reports whether task traffic is currently dropped because
-// the Mullvad proxy is enabled without a healthy session.
+// the Mullvad proxy is enabled or the global WireGuard config session is down.
 func (m *Manager) TaskEgressBlocked() bool {
-	return m.MullvadProxyEnabled() && m.EffectiveTaskProxyURL() == blockedProxyURL
+	return m.EffectiveTaskProxyURL() == blockedProxyURL
 }
 
 // syncWGProxyEgress repoints the runtime egress paths that read the proxy
@@ -1093,6 +1125,155 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 	// Keep the browser MCP's egress in sync with the new global proxy too.
 	m.syncBrowserMCPProxy()
 	return nil
+}
+
+// GlobalWGConfigText returns the stored WireGuard config text ("" when unset).
+func (m *Manager) GlobalWGConfigText() string {
+	v, _, _ := m.pg.GetSetting(settingGlobalWGConfig)
+	return v
+}
+
+// GlobalWGConfigured reports whether an uploaded WireGuard config is stored
+// (fail-closed route: configured without a healthy session drops task egress).
+func (m *Manager) GlobalWGConfigured() bool {
+	if m.pg == nil {
+		return false
+	}
+	v, _, _ := m.pg.GetSetting(settingGlobalWGConfig)
+	return strings.TrimSpace(v) != ""
+}
+
+// GlobalWGPort returns the local proxy port for the global WireGuard session
+// (default 18102 — one above the Mullvad default so both can run).
+func (m *Manager) GlobalWGPort() uint16 {
+	portStr, _, _ := m.pg.GetSetting(settingGlobalWGPort)
+	port, _ := strconv.ParseUint(portStr, 10, 16)
+	if port == 0 {
+		port = 18102
+	}
+	return uint16(port)
+}
+
+// SetGlobalWGPort persists the local proxy port for the global WireGuard session.
+func (m *Manager) SetGlobalWGPort(port uint16) error {
+	return m.pg.SetSetting(settingGlobalWGPort, strconv.Itoa(int(port)))
+}
+
+// SetGlobalWGConfig stores (or clears, with "") an uploaded WireGuard config and
+// starts the tunnel immediately. Callers must rebuild agents afterwards so the
+// new effective proxy takes hold (rebuildAgentsForEgressChange). First-start
+// failure returns the error; the config stays stored and the watchdog keeps
+// retrying every 15s — meanwhile egress fails closed, never direct.
+func (m *Manager) SetGlobalWGConfig(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		if err := m.pg.SetSetting(settingGlobalWGConfig, ""); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		sess := m.globalWG
+		m.globalWG, m.globalWGConf, m.globalWGEndpoint = nil, "", ""
+		m.mu.Unlock()
+		if sess != nil {
+			_ = sess.Stop()
+		}
+		m.syncWGProxyEgress()
+		return nil
+	}
+	if _, err := wgproxy.ParseConfig(text); err != nil {
+		return fmt.Errorf("parse wireguard config: %w", err)
+	}
+	if err := m.pg.SetSetting(settingGlobalWGConfig, text); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	old := m.globalWG
+	m.globalWG, m.globalWGConf, m.globalWGEndpoint = nil, text, ""
+	m.mu.Unlock()
+	if old != nil {
+		_ = old.Stop()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if err := m.startGlobalWG(ctx); err != nil {
+		// Config is stored; session is down → fail-closed. Sync + notify so the
+		// MITM upstream and the navbar pill flip without waiting for the watchdog.
+		m.syncWGProxyEgress()
+		if m.wgEgressChange != nil {
+			m.wgEgressChange()
+		}
+		return err
+	}
+	return nil
+}
+
+// startGlobalWG brings up the userspace WireGuard session from the stored
+// config (endpoints may be hostnames — netstack needs a literal IPv4) and
+// verifies the handshake before accepting it. Callers own the rebuild.
+func (m *Manager) startGlobalWG(ctx context.Context) error {
+	m.mu.RLock()
+	conf := m.globalWGConf
+	m.mu.RUnlock()
+	if conf == "" {
+		return fmt.Errorf("global_wg_config not set")
+	}
+	cfg, err := wgproxy.ParseConfig(conf)
+	if err != nil {
+		return err
+	}
+	endpoint := cfg.Endpoint
+	if host, portStr, err := net.SplitHostPort(endpoint); err == nil {
+		if ip := net.ParseIP(host); ip == nil || ip.To4() == nil {
+			ips, err := net.LookupIP(host)
+			if err != nil {
+				return fmt.Errorf("resolve endpoint %q: %w", host, err)
+			}
+			var v4 net.IP
+			for _, one := range ips {
+				if v4 = one.To4(); v4 != nil {
+					break
+				}
+			}
+			if v4 == nil {
+				return fmt.Errorf("endpoint %q has no IPv4 address", host)
+			}
+			endpoint = net.JoinHostPort(v4.String(), portStr)
+		}
+	}
+	sess, err := wgproxy.Start(ctx, wgproxy.Config{
+		PrivateKey: cfg.PrivateKey,
+		PeerKey:    cfg.PeerKey,
+		Endpoint:   endpoint,
+		ProxyPort:  m.GlobalWGPort(),
+		DNS:        cfg.DNS,
+		LocalAddr:  cfg.LocalAddr,
+	})
+	if err != nil {
+		return err
+	}
+	if !sess.WaitHandshake(15 * time.Second) {
+		_ = sess.Stop()
+		return fmt.Errorf("wireguard handshake failed within 15s: endpoint %s unreachable or key not registered", endpoint)
+	}
+	m.mu.Lock()
+	m.globalWG = sess
+	m.globalWGEndpoint = endpoint
+	m.mu.Unlock()
+	m.syncWGProxyEgress()
+	if m.wgEgressChange != nil {
+		m.wgEgressChange()
+	}
+	log.Printf("[wg] global WireGuard session up via %s, proxy %s", endpoint, sess.ProxyURL())
+	return nil
+}
+
+// GlobalWGState reports the global WireGuard session status for the UI.
+func (m *Manager) GlobalWGState() (up bool, endpoint string, port uint16) {
+	m.mu.RLock()
+	sess := m.globalWG
+	endpoint = m.globalWGEndpoint
+	m.mu.RUnlock()
+	return sess != nil && sess.Healthy(), endpoint, m.GlobalWGPort()
 }
 
 // MullvadProxyEnabled returns whether the Mullvad userspace WireGuard proxy is enabled.
@@ -1317,6 +1498,7 @@ func (m *Manager) watchWGProxy() {
 	var wasUp bool
 	for {
 		time.Sleep(15 * time.Second)
+		m.maintainGlobalWG()
 		if !m.MullvadProxyEnabled() {
 			wasUp = false
 			continue
@@ -1357,6 +1539,27 @@ func (m *Manager) watchWGProxy() {
 			log.Printf("[mullvad] watchdog session (re)start failed: %v", err)
 		}
 		wasUp = false
+	}
+}
+
+// maintainGlobalWG keeps the global WireGuard config session up whenever a
+// config is stored (fail closed while it is not healthy — same contract as
+// Mullvad). Runs on every watchdog tick, independent of the Mullvad state.
+func (m *Manager) maintainGlobalWG() {
+	if !m.GlobalWGConfigured() {
+		return
+	}
+	m.mu.RLock()
+	gsess := m.globalWG
+	m.mu.RUnlock()
+	if gsess != nil && gsess.Healthy() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	err := m.startGlobalWG(ctx)
+	cancel()
+	if err != nil {
+		log.Printf("[wg] watchdog global session (re)start failed: %v", err)
 	}
 }
 

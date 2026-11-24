@@ -483,6 +483,9 @@ export const api = {
   deleteTask: (id: string, options: DeleteTaskOptions) => del<DeleteTaskResult>(`/tasks/${id}`, options),
   controlTask: (id: string, action: "pause" | "resume") =>
     post<{ id: string; paused: boolean; queued: boolean; status: string }>(`/tasks/${id}/control`, { action }),
+  rerunTask: (id: string) =>
+    post<{ id: string; paused: boolean; queued: boolean; status: string }>(`/tasks/${id}/rerun`),
+  duplicateTask: (id: string) => post<Task>(`/tasks/${id}/duplicate`),
   controlTasksBatch: (taskIds: string[], action: "pause" | "resume") =>
     post<{ items: BatchControlItem[] }>("/tasks/control/batch", { task_ids: taskIds, action }),
   taskArchives: (input?: { page?: number; size?: number; q?: string; state?: string; engagementId?: string }) => {
@@ -730,9 +733,11 @@ export const api = {
   findingAssetTree: (q: Omit<FindingQuery, "page" | "pageSize">) =>
     get<FindingAssetTree>(`/exploration/findings/asset-tree?${findingFilterParams(q).toString()}`),
   findingStats: (engagement?: string, summary = false) =>
-    get<FindingStats>(summary
-      ? `/exploration/findings/stats?summary=1${te(engagement, "&")}`
-      : `/exploration/findings/stats${te(engagement)}`),
+    get<FindingStats>(
+      summary
+        ? `/exploration/findings/stats?summary=1${te(engagement, "&")}`
+        : `/exploration/findings/stats${te(engagement)}`,
+    ),
   // exportFindings triggers the findings page export and downloads the file. scope=selected
   // sends ids (a finding_id list); scope=filtered sends the current filters (the FindingQuery filter fields); scope=all ignores filters.
   exportFindings: async (opts: {

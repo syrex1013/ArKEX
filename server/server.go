@@ -861,6 +861,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/tasks/{id}/constraints/{cid}", s.editConstraint)    // constraint management: edit a constraint
 	mux.HandleFunc("DELETE /api/tasks/{id}/constraints/{cid}", s.deleteConstraint) // constraint management: delete a constraint
 	mux.HandleFunc("POST /api/tasks/{id}/control", s.control)
+	mux.HandleFunc("POST /api/tasks/{id}/rerun", s.rerunTask)
+	mux.HandleFunc("POST /api/tasks/{id}/duplicate", s.duplicateTask)
 	mux.HandleFunc("PUT /api/tasks/{id}/llm", s.updateTaskLLMProfiles)
 	mux.HandleFunc("GET /api/tasks/{id}/llm/resolution", s.taskLLMResolutionHandler)
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/control", s.controlIntent)
@@ -981,6 +983,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/mullvad/down", s.mullvadDown)
 	mux.HandleFunc("GET /api/mullvad/status", s.mullvadStatus)
 	mux.HandleFunc("GET /api/mullvad/egress", s.mullvadEgress)
+	mux.HandleFunc("GET /api/mullvad/egress/stream", s.streamMullvadEgress)
 	mux.HandleFunc("GET /api/chat/mentions", s.searchChatMentions)
 	mux.HandleFunc("POST /api/chat", s.chat)
 	mux.HandleFunc("POST /api/chat/upload", s.chatUpload) // upload method 1: files land in uploads/ under the conversation/task work dir
@@ -3963,6 +3966,7 @@ func (s *Server) settingsPayload() map[string]any {
 		concLimit = defaultConcurrencyLimit // when off, still echo a sane default to the UI
 	}
 	limits := notifyLimits(s.m.pg)
+	wgUp, wgEndpoint, _ := s.m.GlobalWGState()
 	return map[string]any{
 		"traffic_capture":          s.m.TrafficEnabled(),
 		"agent_traffic_binding":    s.m.pg.GetBool(settingAgentTrafficBinding, false),
@@ -4009,6 +4013,13 @@ func (s *Server) settingsPayload() map[string]any {
 		"mullvad_relay":           s.m.MullvadRelay(),
 		"mullvad_address":         s.m.MullvadAddress(),
 		"mullvad_mode":            s.m.MullvadMode(),
+		// Global WireGuard config route: secret masked when set, like the other
+		// *_set secrets; the UI sends "__masked__" back to keep it.
+		"global_wg_config":     maskedSecret(s.m.GlobalWGConfigText()),
+		"global_wg_config_set": s.m.GlobalWGConfigured(),
+		"global_wg_proxy_port": s.m.GlobalWGPort(),
+		"global_wg_up":         wgUp,
+		"global_wg_endpoint":   wgEndpoint,
 		"mullvad_task_blocked":    s.m.TaskEgressBlocked(),
 		"sliver_config_path":      s.m.SliverConfigPath(),
 	}
@@ -4099,6 +4110,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		MullvadAddress  *string `json:"mullvad_address"` // tunnel interface IP (bare IPv4)
 		MullvadMode     *string `json:"mullvad_mode"`    // auto|kernel|netstack ("" = auto)
 		SliverConfigPth *string `json:"sliver_config_path"`
+		// Global WireGuard config route. GlobalWGConfig is a sealed secret:
+		// null/"__masked__" = keep, "" = clear; a non-empty value replaces the
+		// stored config and starts the tunnel (400 on invalid config or failed
+		// first handshake — the config stays stored and the watchdog retries).
+		GlobalWGConfig *string `json:"global_wg_config"`
+		GlobalWGPort   *uint16 `json:"global_wg_proxy_port"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -4122,6 +4139,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	req.BraveKey, req.TavilyKey, req.KeenableKey = keepIfMasked(req.BraveKey), keepIfMasked(req.TavilyKey), keepIfMasked(req.KeenableKey)
 	req.WebSearchProxy, req.GlobalProxy = keepIfMasked(req.WebSearchProxy), keepIfMasked(req.GlobalProxy)
 	req.MullvadKey = keepIfMasked(req.MullvadKey)
+	req.GlobalWGConfig = keepIfMasked(req.GlobalWGConfig)
 	if req.ConstraintsInjectPlanner != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {
 			writeErr(w, 500, err.Error())
@@ -4234,6 +4252,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			s.m.stopWGProxy()
 			s.m.syncWGProxyEgress()
 			s.rebuildAgentsForEgressChange()
+		} else {
+			// Enabling flips EffectiveTaskProxyURL to fail-closed until Up succeeds.
+			s.m.syncWGProxyEgress()
+			egressLive.Notify()
 		}
 	}
 	if req.MullvadPort != nil {
@@ -4292,6 +4314,31 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.GlobalWGPort != nil {
+		if *req.GlobalWGPort == 0 {
+			writeErr(w, 400, "global_wg_proxy_port must be between 1 and 65535")
+			return
+		}
+		if err := s.m.SetGlobalWGPort(*req.GlobalWGPort); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if s.m.GlobalWGConfigured() {
+			// Restart with the new port; egress stays fail closed meanwhile.
+			if err := s.m.SetGlobalWGConfig(s.m.GlobalWGConfigText()); err != nil {
+				log.Printf("[wg] restart with new proxy port failed: %v", err)
+			}
+		}
+	}
+	if req.GlobalWGConfig != nil {
+		// Validation/first-handshake failure is a client-visible error (400),
+		// not a 500; the config stays stored and the watchdog retries.
+		if err := s.m.SetGlobalWGConfig(*req.GlobalWGConfig); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		s.rebuildAgentsForEgressChange()
+	}
 	if req.LLMRecord != nil {
 		// The recorder reads this flag on every call; toggling takes effect immediately, no applyLLM rebuild needed.
 		if err := s.m.SetLLMRecordEnabled(*req.LLMRecord); err != nil {
@@ -4339,6 +4386,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed = true // capture-off egress is baked into agents at build time → rebuild
+		egressLive.Notify()
 	}
 	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.KeenableKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.

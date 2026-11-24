@@ -1042,6 +1042,14 @@ export interface Settings {
   // Global egress proxy (http/https/socks5, may carry user:pass) that all target traffic goes
   // through. Acts as the MITM upstream when traffic capture is on; injected directly into the agent's bash/WebFetch when capture is off. Empty = direct.
   global_proxy?: string;
+  // Uploaded WireGuard config (write-only sealed secret, masked on read). When set, all
+  // target traffic tunnels through it; the proxy address above is bypassed while the
+  // tunnel is healthy, and egress is dropped (never direct) while it is not.
+  global_wg_config?: string;
+  global_wg_config_set?: boolean;
+  global_wg_up?: boolean;
+  global_wg_endpoint?: string;
+  global_wg_proxy_port?: number;
   python_interpreter?: string; // python interpreter path for custom script tools (empty = detect at runtime)
   workers?: number; // concurrent worker agent count (default 3); applies to tasks started afterwards
   // Task concurrency cap: max simultaneously "running" tasks. Off = unlimited; on, new tasks beyond the limit queue and start automatically when a slot frees up.
@@ -1088,6 +1096,10 @@ export interface MullvadEgress {
   mode?: string; // "kernel" | "netstack" when a tunnel is up
   mode_setting?: string; // ""/"auto" | "kernel" | "netstack"
   global_proxy_set?: boolean;
+  // Global WireGuard config route (upload): healthy session tunnels all target traffic.
+  global_wg_set?: boolean;
+  global_wg_up?: boolean;
+  global_wg_endpoint?: string;
   task_egress_blocked?: boolean; // enabled without a healthy tunnel → fail-closed
   egress_ip: string; // public IP via am.i.mullvad.net ("" when the probe failed)
   egress_relay?: string; // Mullvad exit hostname, e.g. pl-waw-wg-202

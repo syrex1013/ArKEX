@@ -67,11 +67,12 @@ var secretSettingValues = map[string]string{
 	"web_search_proxy":        "socks5://u:wsproxy-plain-pass@ws.example:1080",
 	"global_proxy":            "http://u:gproxy-plain-pass@gp.example:3128",
 	"mullvad_private_key":     "mullvad-plain",
+	"global_wg_config":        "[Interface]\nPrivateKey = mullvad-plain\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = mullvad-plain\nEndpoint = 192.0.2.1:51820\n",
 }
 
 const llmProxyPlain = "http://u:llmproxy-plain-pass@llm-proxy.example:3128"
 
-const deleteSecretSettings = `DELETE FROM settings WHERE key IN ('brave_search_api_key','tavily_search_api_key','keenable_search_api_key','web_search_proxy','global_proxy','mullvad_private_key')`
+const deleteSecretSettings = `DELETE FROM settings WHERE key IN ('brave_search_api_key','tavily_search_api_key','keenable_search_api_key','web_search_proxy','global_proxy','mullvad_private_key','global_wg_config')`
 
 // secretFixture writes one secret to each location, through the db API or, for
 // a legacy database, as raw plaintext SQL.

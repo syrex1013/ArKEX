@@ -95,7 +95,7 @@ var (
 
 // secretSettingKeys are the settings stored encrypted, AAD "settings.<key>".
 // Every other setting stays in clear.
-var secretSettingKeys = []string{"brave_search_api_key", "tavily_search_api_key", "keenable_search_api_key", "web_search_proxy", "global_proxy", "mullvad_private_key"}
+var secretSettingKeys = []string{"brave_search_api_key", "tavily_search_api_key", "keenable_search_api_key", "web_search_proxy", "global_proxy", "mullvad_private_key", "global_wg_config"}
 
 func secretSettingColumns() []secretColumn {
 	out := make([]secretColumn, 0, len(secretSettingKeys))

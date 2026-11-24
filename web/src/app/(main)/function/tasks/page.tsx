@@ -22,6 +22,7 @@ import {
   ArrowUpDownIcon,
   ArrowUpIcon,
   ChevronRightIcon,
+  CopyIcon,
   EyeIcon,
   FolderInputIcon,
   GripVerticalIcon,
@@ -33,6 +34,7 @@ import {
   PinOffIcon,
   PlayIcon,
   PlusIcon,
+  RotateCcwIcon,
   SaveIcon,
   SearchIcon,
   SlidersHorizontalIcon,
@@ -256,11 +258,27 @@ const ENGAGEMENT_NONE_VALUE = "none";
 // so the two sides can never disagree about one being clickable and the other not.
 const PAUSABLE_STATUSES = new Set<TaskStatus>(["created", "queued", "running"]);
 const ARCHIVABLE_STATUSES = new Set<TaskStatus>(["paused", "done", "failed", "timeout"]);
+const TERMINAL_STATUSES = new Set<TaskStatus>(["done", "failed", "timeout"]);
 
 function taskControlAction(status: TaskStatus): "pause" | "resume" | null {
   if (status === "paused") return "resume";
   if (PAUSABLE_STATUSES.has(status)) return "pause";
   return null;
+}
+
+function taskIsTerminal(status: TaskStatus): boolean {
+  return TERMINAL_STATUSES.has(status);
+}
+
+function ActionTip({ label, children }: { label: string; children: React.ReactElement }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex">{children}</span>
+      </TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 type TaskSortField = "id" | "created" | "duration" | "status";
@@ -662,6 +680,37 @@ function TasksPageContent({
     [load],
   );
 
+  const rerunTask = React.useCallback(
+    async (task: Task) => {
+      try {
+        const result = await api.rerunTask(task.id);
+        toast.success(
+          result.queued ? t("Task #{id} rerun queued", { id: task.id }) : t("Task #{id} rerun", { id: task.id }),
+        );
+      } catch (error) {
+        toast.error(t("Rerun failed: {error}", { error: (error as Error).message }));
+      } finally {
+        lastRef.current = "";
+        load();
+      }
+    },
+    [load],
+  );
+
+  const duplicateTask = React.useCallback(
+    async (task: Task) => {
+      try {
+        const created = await api.duplicateTask(task.id);
+        toast.success(t("Duplicated as task #{id}", { id: created.id }));
+        lastRef.current = "";
+        load();
+      } catch (error) {
+        toast.error(t("Duplicate failed: {error}", { error: (error as Error).message }));
+      }
+    },
+    [load],
+  );
+
   // deleteTasks deletes the selected tasks one by one: the backend has no batch endpoint, and each delete cascades into cleaning assets/traffic/files,
   // so they run serially to avoid overwhelming the backend at once; successes leave the selection, failures stay for retry.
   const deleteTasks = React.useCallback(
@@ -1051,7 +1100,7 @@ function TasksPageContent({
                       onSort={sortTasksBy}
                     />
                     <TableHead className="text-right">{t("Token")}</TableHead>
-                    <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
+                    <TableHead className="sticky right-0 z-20 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
                       {t("Actions")}
                     </TableHead>
                   </TableRow>
@@ -1069,6 +1118,8 @@ function TasksPageContent({
                       onRename={renameTask}
                       onTogglePinned={toggleTaskPinned}
                       onArchive={queueTaskArchive}
+                      onRerun={rerunTask}
+                      onDuplicate={duplicateTask}
                       selected={selectedIds.has(task.id)}
                       onSelectedChange={toggleSelected}
                     />
@@ -1255,6 +1306,8 @@ const TaskRow = React.memo(function TaskRow({
   onRename,
   onTogglePinned,
   onArchive,
+  onRerun,
+  onDuplicate,
   selected,
   onSelectedChange,
 }: {
@@ -1265,6 +1318,8 @@ const TaskRow = React.memo(function TaskRow({
   onRename: (task: Task, name: string) => Promise<void>;
   onTogglePinned: (task: Task) => Promise<void>;
   onArchive: (task: Task) => Promise<void>;
+  onRerun: (task: Task) => Promise<void>;
+  onDuplicate: (task: Task) => Promise<void>;
   selected: boolean;
   onSelectedChange: (id: string, checked: boolean) => void;
 }) {
@@ -1292,17 +1347,30 @@ const TaskRow = React.memo(function TaskRow({
           )}
         </div>
       </TableCell>
-      <TableCell className="text-muted-foreground max-w-40">
-        <Link
-          href={`/function/tasks/detail?id=${encodeURIComponent(task.id)}`}
-          className="block truncate rounded-sm hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          title={task.description}
-        >
-          {task.description}
-        </Link>
+      <TableCell className="text-muted-foreground max-w-40 overflow-hidden">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Link
+              href={`/function/tasks/detail?id=${encodeURIComponent(task.id)}`}
+              className="block truncate rounded-sm hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {task.description}
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-sm">
+            {task.description}
+          </TooltipContent>
+        </Tooltip>
       </TableCell>
-      <TableCell className="text-muted-foreground max-w-40 truncate" title={task.goal}>
-        {task.goal}
+      <TableCell className="text-muted-foreground max-w-40 overflow-hidden">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="block truncate">{task.goal}</span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-sm">
+            {task.goal}
+          </TooltipContent>
+        </Tooltip>
       </TableCell>
       <TableCell>
         <StatusBadge domain="task" value={task.status} dot />
@@ -1378,20 +1446,21 @@ const TaskRow = React.memo(function TaskRow({
           "—"
         )}
       </TableCell>
-      <TableCell className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))] group-hover:bg-muted/50">
+      <TableCell className="sticky right-0 z-20 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))] group-hover:bg-muted/50">
         <div className="flex items-center justify-end gap-0.5">
-          <Button
-            size="icon"
-            variant="ghost"
-            asChild
-            aria-label={t("View task details")}
-            title={t("View task details")}
-          >
-            <Link href={`/function/tasks/detail?id=${encodeURIComponent(task.id)}`}>
-              <EyeIcon />
-            </Link>
-          </Button>
-          <TaskControlButton task={task} onControl={onControl} />
+          <ActionTip label={t("View task details")}>
+            <Button size="icon" variant="ghost" asChild aria-label={t("View task details")}>
+              <Link href={`/function/tasks/detail?id=${encodeURIComponent(task.id)}`}>
+                <EyeIcon />
+              </Link>
+            </Button>
+          </ActionTip>
+          {taskIsTerminal(task.status) ? (
+            <TaskRerunAction task={task} onRerun={onRerun} />
+          ) : (
+            <TaskControlButton task={task} onControl={onControl} />
+          )}
+          <TaskDuplicateAction task={task} onDuplicate={onDuplicate} />
           <TaskPinAction task={task} onTogglePinned={onTogglePinned} />
           <TaskArchiveAction task={task} onArchive={onArchive} />
           <DeleteTaskDialog task={task} onDelete={onDelete} />
@@ -1504,26 +1573,78 @@ function taskPinIcon(pinning: boolean, pinned: boolean) {
 function TaskPinAction({ task, onTogglePinned }: { task: Task; onTogglePinned: (task: Task) => Promise<void> }) {
   const [pinning, setPinning] = React.useState(false);
   const pinned = taskIsPinned(task);
+  const label = pinned ? t("Unpin") : t("Pin");
 
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon"
-      disabled={pinning}
-      aria-label={pinned ? t("Unpin task #{id}", { id: task.id }) : t("Pin task #{id}", { id: task.id })}
-      title={pinned ? t("Unpin") : t("Pin")}
-      onClick={async () => {
-        setPinning(true);
-        try {
-          await onTogglePinned(task);
-        } finally {
-          setPinning(false);
-        }
-      }}
-    >
-      {taskPinIcon(pinning, pinned)}
-    </Button>
+    <ActionTip label={label}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        disabled={pinning}
+        aria-label={pinned ? t("Unpin task #{id}", { id: task.id }) : t("Pin task #{id}", { id: task.id })}
+        onClick={async () => {
+          setPinning(true);
+          try {
+            await onTogglePinned(task);
+          } finally {
+            setPinning(false);
+          }
+        }}
+      >
+        {taskPinIcon(pinning, pinned)}
+      </Button>
+    </ActionTip>
+  );
+}
+
+function TaskDuplicateAction({ task, onDuplicate }: { task: Task; onDuplicate: (task: Task) => Promise<void> }) {
+  const [pending, setPending] = React.useState(false);
+  return (
+    <ActionTip label={t("Duplicate task")}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        disabled={pending}
+        aria-label={t("Duplicate task #{id}", { id: task.id })}
+        onClick={async () => {
+          setPending(true);
+          try {
+            await onDuplicate(task);
+          } finally {
+            setPending(false);
+          }
+        }}
+      >
+        {pending ? <Loader2Icon className="animate-spin" /> : <CopyIcon />}
+      </Button>
+    </ActionTip>
+  );
+}
+
+function TaskRerunAction({ task, onRerun }: { task: Task; onRerun: (task: Task) => Promise<void> }) {
+  const [pending, setPending] = React.useState(false);
+  return (
+    <ActionTip label={t("Rerun task")}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        disabled={pending}
+        aria-label={t("Rerun task #{id}", { id: task.id })}
+        onClick={async () => {
+          setPending(true);
+          try {
+            await onRerun(task);
+          } finally {
+            setPending(false);
+          }
+        }}
+      >
+        {pending ? <Loader2Icon className="animate-spin" /> : <RotateCcwIcon />}
+      </Button>
+    </ActionTip>
   );
 }
 
@@ -1546,25 +1667,27 @@ function TaskControlButton({
   const [pending, setPending] = React.useState(false);
   const action = taskControlAction(task.status);
   const label = action === "resume" ? t("Resume task") : t("Stop task");
+  const tip = action ? label : t("Cannot pause or resume in this state");
   return (
-    <Button
-      size="icon"
-      variant="ghost"
-      aria-label={label}
-      title={action ? label : t("Cannot pause or resume in this state")}
-      disabled={!action || pending}
-      onClick={async () => {
-        if (!action) return;
-        setPending(true);
-        try {
-          await onControl(task.id, action);
-        } finally {
-          setPending(false);
-        }
-      }}
-    >
-      {taskControlIcon(pending, action)}
-    </Button>
+    <ActionTip label={tip}>
+      <Button
+        size="icon"
+        variant="ghost"
+        aria-label={label}
+        disabled={!action || pending}
+        onClick={async () => {
+          if (!action) return;
+          setPending(true);
+          try {
+            await onControl(task.id, action);
+          } finally {
+            setPending(false);
+          }
+        }}
+      >
+        {taskControlIcon(pending, action)}
+      </Button>
+    </ActionTip>
   );
 }
 
@@ -1628,7 +1751,7 @@ function ArchiveConfirmDialog({
 
 function TaskArchiveAction({ task, onArchive }: { task: Task; onArchive: (task: Task) => Promise<void> }) {
   const reason = archiveBlockReason(task);
-  const trigger = (
+  const button = (
     <Button
       size="icon"
       variant="ghost"
@@ -1642,13 +1765,13 @@ function TaskArchiveAction({ task, onArchive }: { task: Task; onArchive: (task: 
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="inline-flex">{trigger}</span>
+          <span className="inline-flex">{button}</span>
         </TooltipTrigger>
-        <TooltipContent>{reason}</TooltipContent>
+        <TooltipContent className="max-w-xs">{reason}</TooltipContent>
       </Tooltip>
     );
   }
-  return <ArchiveConfirmDialog count={1} trigger={trigger} onConfirm={() => onArchive(task)} />;
+  return <ArchiveConfirmDialog count={1} trigger={button} onConfirm={() => onArchive(task)} />;
 }
 
 const ARCHIVE_PROCESSING_STATES = new Set<TaskArchiveState>([

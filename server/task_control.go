@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Autumn-27/artex/agent"
@@ -285,4 +287,128 @@ func (s *Server) controlTasksBatch(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+// rerunTask revives a terminal task (done/failed/timeout) through the shared
+// admission path. Pause/resume stay limited to non-terminal tasks; this is the
+// explicit operator action for "run it again".
+func (s *Server) rerunTask(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	lifecycle := t.lifecycleSnapshot()
+	if !isTerminalStatus(lifecycle.Status) {
+		writeErr(w, 409, "only a completed, failed, or timed-out task can be rerun")
+		return
+	}
+	queued, err := s.admitTask(t, "resume")
+	if err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	status := "running"
+	if queued {
+		status = "queued"
+	}
+	log.Printf("[task] #%s rerun (%s)", t.ID, status)
+	writeJSON(w, 200, taskControlResult{ID: t.ID, Queued: queued, Status: status})
+}
+
+// duplicateTask creates a fresh task with the same brief and settings as the
+// source. Graph history is not copied; credentials and task-level intercept
+// rules are. The new task launches like a normal create.
+func (s *Server) duplicateTask(w http.ResponseWriter, r *http.Request) {
+	src, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	life := src.lifecycleSnapshot()
+	llm := src.llmStateSnapshot()
+	name := strings.TrimSpace(life.Name)
+	if name == "" {
+		name = strings.TrimSpace(src.Description)
+	}
+	if name != "" {
+		name = name + " (copy)"
+	}
+	quiet := src.PlanQuietMode
+	coverage := src.CoverageEnabled
+	rotate := llm.Rotate
+	gate := src.targetGate.Load()
+
+	srcID, _ := strconv.ParseInt(src.ID, 10, 64)
+	var interceptRules []db.TaskInterceptRuleInput
+	if as := s.m.Assets(); as != nil && srcID > 0 {
+		rules, err := as.ListTaskInterceptRules(srcID)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		for _, rule := range rules {
+			interceptRules = append(interceptRules, db.TaskInterceptRuleInput{
+				Enabled: rule.Enabled,
+				Action:  rule.Action,
+				Kind:    rule.Kind,
+				Pattern: rule.Pattern,
+				Note:    rule.Note,
+			})
+		}
+	}
+
+	var creds []db.TaskCredentialInput
+	if srcID > 0 {
+		rows, err := s.m.PG().TaskCredentials(srcID)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		for _, c := range rows {
+			creds = append(creds, db.TaskCredentialInput{
+				Domain: c.Domain, Username: c.Username, Password: c.Password, Source: "user", Note: c.Note,
+			})
+		}
+	}
+
+	t, err := s.m.CreateTaskWithOptions(src.Description, src.Goal, db.TaskCreateOptions{
+		Name: name, CategoryID: life.CategoryID, EngagementID: life.EngagementID,
+		CompanyIDs: append([]int64(nil), life.CompanyIDs...), LLMProfileIDs: append([]int64(nil), llm.ProfileIDs...),
+		TimeoutSeconds: src.TimeoutSeconds, PlanHeartbeatSeconds: src.PlanHeartbeatSeconds,
+		PlanQuietMode: &quiet, CoverageEnabled: &coverage, InterceptRules: interceptRules,
+		LLMRotate: &rotate, TargetGate: &gate,
+	})
+	if err != nil {
+		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {
+			writeErr(w, 400, "task category not found or invalid")
+			return
+		}
+		if errors.Is(err, db.ErrTaskCompanyIDsInvalid) || errors.Is(err, db.ErrTaskCompanyNotFound) {
+			writeErr(w, 400, "linked company not found or invalid")
+			return
+		}
+		if errors.Is(err, db.ErrEngagementNotFound) {
+			writeErr(w, 400, "engagement not found")
+			return
+		}
+		if errors.Is(err, db.ErrEngagementInvalid) {
+			writeErr(w, 400, "invalid engagement")
+			return
+		}
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if len(creds) > 0 {
+		taskNum, _ := strconv.ParseInt(t.ID, 10, 64)
+		for _, c := range creds {
+			if _, err := s.m.PG().UpsertTaskCredential(taskNum, c); err != nil {
+				writeErr(w, 400, "invalid credential for "+c.Domain+": "+err.Error())
+				return
+			}
+		}
+	}
+	log.Printf("[task] duplicated #%s → #%s", src.ID, t.ID)
+	s.launchTask(t, src.Description+" "+src.Goal, false)
+	writeJSON(w, 201, taskDTO(t, s.resolvedTaskStatus(t)))
 }

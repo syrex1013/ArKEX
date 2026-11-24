@@ -1,17 +1,29 @@
 import type { MullvadEgress } from "./types";
 
-type Route = "mullvad" | "proxy" | "direct";
+type Route = "mullvad" | "wg" | "proxy" | "direct";
 type State = "checking" | "working" | "failed" | "off" | "unverified" | "unavailable";
 
 export function egressStatus(
   egress: MullvadEgress | undefined,
   unreachable = false,
 ): { route: Route; state: State; ip?: string } {
-  const route = egress?.up || egress?.task_egress_blocked ? "mullvad" : egress?.global_proxy_set ? "proxy" : "direct";
+  // Mullvad wins while its tunnel is up (EffectiveTaskProxyURL order); a stored
+  // global wg config owns the indicator otherwise, then Mullvad fail-closed, then
+  // proxy/direct.
+  let route: Route = "direct";
+  if (egress?.up) route = "mullvad";
+  else if (egress?.global_wg_set) route = "wg";
+  else if (egress?.task_egress_blocked) route = "mullvad";
+  else if (egress?.global_proxy_set) route = "proxy";
   if (unreachable) return { route, state: "unavailable" };
   if (!egress) return { route, state: "checking" };
   if (route === "proxy") return { route, state: "unverified" };
   if (route === "direct") return { route, state: "off", ip: egress.egress_ip || undefined };
+  if (route === "wg") {
+    if (egress.global_wg_up && egress.egress_ip) return { route, state: "working", ip: egress.egress_ip };
+    if (!egress.global_wg_up) return { route, state: "failed" };
+    return { route, state: "unverified" };
+  }
   if (egress.task_egress_blocked) return { route, state: "failed" };
   if (egress.egress_tunneled && egress.egress_ip) return { route, state: "working", ip: egress.egress_ip };
   return { route, state: "unverified" };

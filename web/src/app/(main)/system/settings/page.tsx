@@ -58,6 +58,12 @@ export default function SystemSettingsPage() {
   const [savingProxy, setSavingProxy] = React.useState(false);
   const [globalProxyInput, setGlobalProxyInput] = React.useState("");
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
+  // Global WireGuard config route (upload replaces the proxy address while up).
+  const [wgConfigInput, setWgConfigInput] = React.useState("");
+  const [wgSet, setWgSet] = React.useState(false);
+  const [wgUp, setWgUp] = React.useState(false);
+  const [wgEndpoint, setWgEndpoint] = React.useState("");
+  const [savingWG, setSavingWG] = React.useState(false);
   // Mullvad userspace WireGuard proxy.
   const [mullvadEnabled, setMullvadEnabled] = React.useState(false);
   const [mullvadPort, setMullvadPort] = React.useState("18101");
@@ -99,6 +105,9 @@ export default function SystemSettingsPage() {
     setKeenableKeySet(!!s.keenable_key_set);
     setProxyInput(s.web_search_proxy ?? "");
     setGlobalProxyInput(s.global_proxy ?? "");
+    setWgSet(!!s.global_wg_config_set);
+    setWgUp(!!s.global_wg_up);
+    setWgEndpoint(s.global_wg_endpoint ?? "");
     setMullvadEnabled(!!s.mullvad_proxy_enabled);
     setMullvadPort(String(s.mullvad_proxy_port ?? 18101));
     setMullvadKeySet(!!s.mullvad_private_key_set);
@@ -357,6 +366,51 @@ export default function SystemSettingsPage() {
     }
   };
 
+  const importWGConfig = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (file.size > 64 * 1024) {
+      toast.error(t("WireGuard config must be smaller than 64 KB"));
+      return;
+    }
+    try {
+      setWgConfigInput(await file.text());
+    } catch {
+      toast.error(t("Could not read the WireGuard config file."));
+    }
+  };
+
+  const saveWGConfig = () => {
+    const text = wgConfigInput.trim();
+    if (!text) {
+      toast.error(t("Paste or upload a WireGuard config first"));
+      return;
+    }
+    setSavingWG(true);
+    api
+      .setSettings({ global_wg_config: text })
+      .then((s) => {
+        apply(s);
+        setWgConfigInput("");
+        toast.success(t("WireGuard config saved · target egress tunnels through it"));
+      })
+      .catch((e) => toast.error(t("Save failed: {error}", { error: (e as Error).message })))
+      .finally(() => setSavingWG(false));
+  };
+
+  const clearWGConfig = () => {
+    setSavingWG(true);
+    api
+      .setSettings({ global_wg_config: "" })
+      .then((s) => {
+        apply(s);
+        toast.success(t("WireGuard config cleared · back to the proxy address / direct"));
+      })
+      .catch((e) => toast.error(t("Save failed: {error}", { error: (e as Error).message })))
+      .finally(() => setSavingWG(false));
+  };
+
   const saveMullvadKey = () => {
     setSavingMullvadKey(true);
     api
@@ -580,6 +634,58 @@ export default function SystemSettingsPage() {
                 ? t("Configured · all target traffic egresses through this proxy")
                 : t("Not configured · target traffic egresses directly")}
             </p>
+            <div className="mt-3 border-t pt-3">
+              <Label htmlFor="global-wg-config" className="text-sm font-normal text-muted-foreground">
+                {t("WireGuard config")}
+              </Label>
+              <p className="text-muted-foreground text-xs">
+                {rich(
+                  t(
+                    "Or upload a standard <code>.conf</code> file: while the tunnel is up, <b>all target traffic</b> tunnels through it and the proxy address above is bypassed; while it is down, target egress is dropped (never direct).",
+                  ),
+                )}
+              </p>
+              <textarea
+                id="global-wg-config"
+                className="text-muted-foreground focus-visible:ring-ring/50 h-24 w-full rounded-md border bg-transparent px-3 py-2 font-mono text-xs focus-visible:ring-[3px] focus-visible:outline-1"
+                placeholder={
+                  "[Interface]\nPrivateKey = …\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = …\nEndpoint = host:51820"
+                }
+                value={wgConfigInput}
+                disabled={!loaded || savingWG || wgSet}
+                spellCheck={false}
+                onChange={(e) => setWgConfigInput(e.target.value)}
+              />
+              <div className="flex items-center gap-2">
+                <Input
+                  id="global-wg-config-file"
+                  type="file"
+                  accept=".conf"
+                  className="w-56"
+                  disabled={!loaded || savingWG || wgSet}
+                  onChange={importWGConfig}
+                />
+                <Button
+                  type="button"
+                  onClick={saveWGConfig}
+                  disabled={!loaded || savingWG || wgSet || !wgConfigInput.trim()}
+                >
+                  {t("Save & connect")}
+                </Button>
+                {wgSet && (
+                  <Button type="button" variant="outline" onClick={clearWGConfig} disabled={savingWG}>
+                    {t("Clear")}
+                  </Button>
+                )}
+              </div>
+              <p className="text-muted-foreground text-xs" role="status">
+                {wgSet
+                  ? wgUp
+                    ? t("Tunnel up · target egress exits via {endpoint}", { endpoint: wgEndpoint })
+                    : t("Stored · tunnel down, target egress is dropped until it reconnects")
+                  : t("Not configured")}
+              </p>
+            </div>
           </CardContent>
         </Card>
 
@@ -657,11 +763,7 @@ export default function SystemSettingsPage() {
                   onChange={(e) => setMullvadKeyInput(e.target.value)}
                 />
                 {!wireGuardImported && (
-                  <Button
-                    type="button"
-                    onClick={saveMullvadKey}
-                    disabled={mullvadBusy}
-                  >
+                  <Button type="button" onClick={saveMullvadKey} disabled={mullvadBusy}>
                     {t("Save")}
                   </Button>
                 )}
@@ -725,12 +827,7 @@ export default function SystemSettingsPage() {
                 onChange={(e) => setSliverPath(e.target.value)}
               />
             </div>
-            <Button
-              type="button"
-              className="self-start"
-              onClick={saveMullvad}
-              disabled={mullvadBusy}
-            >
+            <Button type="button" className="self-start" onClick={saveMullvad} disabled={mullvadBusy}>
               {wireGuardImported ? t("Save WireGuard config") : t("Save")}
             </Button>
           </CardContent>
