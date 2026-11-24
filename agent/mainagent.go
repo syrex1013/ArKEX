@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
@@ -34,6 +35,7 @@ type MainAgent struct {
 	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	runTimeout      time.Duration                          // per-chat wall-clock budget (0 = unlimited)
 }
 
 // SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
@@ -81,6 +83,11 @@ func (m *MainAgent) SetWebSearch(o WebSearchOpts) { m.webSearch = o }
 // SetSteerWork wires the engine callback that lets the main agent's steer_work
 // tool inject a mid-run course-correction into a running work (nil = tool off).
 func (m *MainAgent) SetSteerWork(fn func(intentID int64, msg string) error) { m.steerWork = fn }
+
+// SetRunTimeout configures the per-chat wall-clock budget (0 = unlimited).
+// Mirrors Worker.SetRunTimeout: at the deadline the SDK settles the chat in
+// place so partial answers still reach the human. Safe to call before Chat.
+func (m *MainAgent) SetRunTimeout(run time.Duration) { m.runTimeout = run }
 
 // mainAgentDefaultTmpl is the built-in EDITABLE body (section [A]) of the main agent
 // prompt, seeded into agent_prompts. Goal is a {{.Goal}} template var; the
@@ -158,6 +165,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		WorkingDir:            mainDir,                              // the main run directory <workDir>/tasks/<taskID>/main
 		ToolOutputDir:         TaskToolOutputDir(m.workDir, taskID, mainDir),
 		MaxTurns:              m.maxTurns,                             // 0 = unlimited (configurable in agent management)
+		MaxDuration:           m.runTimeout,                           // 0 = unlimited; overridable per task like the worker run budget
 		Compaction:            compactionConfig(m.compactionWindow()), // long chats stay within the window
 		Todos:                 actool.NewTodoStore(),                  // session-level temporary todos (TodoWrite), planning only, dropped on exit
 		// hitting the budget (steps) → the SDK runs wrap-up: output a one-line progress summary to the user. Prompt and wrap-up rounds are editable in the backend (default 10 rounds).

@@ -456,6 +456,7 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 			"evidence_version": map[string]any{"type": "integer", "description": "evidence version returned by get_finding_traffic; prevents the report from overwriting newer evidence changes"},
 			"poe_level":        map[string]any{"type": "integer", "description": "proof-of-exploitation level 0-4: 1 error/timing/response variation, 2 structural manipulation, 3 actual data extracted, 4 critical impact. L3 is the minimum for verified. Omit or 0 when not proven."},
 			"evidence_quotes":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "exact lines copied from a bound proof/verification response body (get_finding_traffic). Never from memory; the server checks each one verbatim after whitespace normalization."},
+			"oast_tag":         map[string]any{"type": "string", "description": "optional: the OAST payload host (from oast_payload) whose confirmed callback proves this finding out-of-band (S3 receipt). Verified even when no response-body quote matches; a missing callback never verifies."},
 		}, "finding_id", "report"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -464,6 +465,7 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 				Report          string          `json:"report"`
 				PoELevel        *int            `json:"poe_level"`
 				EvidenceQuotes  []string        `json:"evidence_quotes"`
+				OASTTag         string          `json:"oast_tag"`
 			}
 			_ = json.Unmarshal(in, &a)
 			nodeID := parseProfileID(a.FindingID) // reuses the "number or numeric string" parser
@@ -492,9 +494,16 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 			if n == 0 {
 				return notFound, nil
 			}
+			// Persist a claimed OAST receipt tag before assessing: the S3 check
+			// reads the confirmed-callback state for it. Empty input = no claim.
+			if tag := strings.TrimSpace(a.OASTTag); tag != "" {
+				if err := s.m.pg.SetFindingOASTTag(ctx, findingID, tag); err != nil {
+					return actool.Errorf("report saved, but oast_tag not recorded: " + err.Error()), nil
+				}
+			}
 			// The report is saved above; verification only decides the status. A
 			// downgrade is recorded and reported, never used to drop the report.
-			status, note := s.assessFindingVerification(ctx, findingID, poe, a.EvidenceQuotes)
+			status, note := s.assessFindingVerification(ctx, findingID, poe, a.EvidenceQuotes, a.OASTTag)
 			if err := s.m.pg.SetFindingVerification(findingID, status, poe, note); err != nil {
 				return actool.Errorf("report saved, but verification not recorded: " + err.Error()), nil
 			}

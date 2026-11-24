@@ -38,6 +38,10 @@ func (f *fakeLab) LaunchFuzz(_ context.Context, taskID, kind, target, _ string) 
 	return 7, nil
 }
 
+func (f *fakeLab) AuthDiff(_ context.Context, _, _ string, _ []string) (any, error) {
+	return map[string]any{}, nil
+}
+
 // TestLabToolsInWorkerSet: the four lab techniques are part of the worker set
 // (kill_work contract: present always, refusing at call time when the host has
 // not wired a backend).

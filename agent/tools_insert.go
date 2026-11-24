@@ -551,6 +551,9 @@ func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 			if a.PageSize <= 0 {
 				a.PageSize = 10
 			}
+			if a.PageSize > 100 { // context-blowup guard, same rationale as list_assets
+				a.PageSize = 100
+			}
 			offset := (a.Page - 1) * a.PageSize
 			assets, total, err := t.as.ListUntestedAssetsWithSources(t.taskID, strings.TrimSpace(a.Type), a.PageSize, offset)
 			if err != nil {
@@ -596,6 +599,11 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 			if a.Limit <= 0 {
 				a.Limit = 10
 			}
+			capped := false
+			if a.Limit > 200 { // context-blowup guard: a huge page would flood the model's window
+				a.Limit = 200
+				capped = true
+			}
 
 			var assets []*db.Asset
 			var err error
@@ -615,6 +623,7 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 			return jsonResult(map[string]any{
 				"count":  len(assets),
 				"assets": assets,
+				"capped": capped,
 			})
 		},
 	)
@@ -708,6 +717,10 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// Lab techniques (desync probing, CPG/taint indexing, fuzzing): wired by
 		// the server; each tool refuses with a clear message when unset.
 		t.desyncProbeTool(), t.cpgIndexTool(), t.cpgSinksTool(), t.fuzzTool(),
+		// OAST callback correlation (payload minting, hit listing, blocking wait)
+		// and the auth-matrix identity diff: same wiring contract as the lab tools.
+		t.oastPayloadTool(), t.listOASTCallbacksTool(), t.waitOASTCallbackTool(),
+		t.authMatrixDiffTool(),
 		// node_detail: once a worker has an intent_id/node id, it can look up that node's
 		// full detail (pairs with the review above).
 		t.nodeDetail(),

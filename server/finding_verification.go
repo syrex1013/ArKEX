@@ -137,7 +137,34 @@ func readBoundResponse(store *evidence.Store, snap db.TrafficEvidenceSnapshot) (
 // assessFindingVerification computes the verification state of a finding from
 // its bound traffic and the quotes the agent supplied. poe is the declared POE
 // level (0 when absent). It never returns "verified" unless every rule passes.
-func (s *Server) assessFindingVerification(ctx context.Context, findingID int64, poe int, quotes []string) (status, note string) {
+// oastTag is the finding's claimed OAST receipt tag (empty = none): when the S1
+// quote check ends unverified but a callback for the tag was actually received
+// (and POE is declared), the receipt verifies the finding — an out-of-band
+// interaction is proof even when no response-body quote matches. Absence of a
+// callback never upgrades anything (fail closed).
+func (s *Server) assessFindingVerification(ctx context.Context, findingID int64, poe int, quotes []string, oastTag string) (status, note string) {
+	status, note = s.assessFindingVerificationS1(ctx, findingID, poe, quotes)
+	if status != db.VerificationUnverified {
+		return status, note
+	}
+	oastTag = strings.TrimSpace(oastTag)
+	if oastTag == "" || poe < verificationMinPOE {
+		return status, note
+	}
+	hit, err := s.oastServer().HasCallback(ctx, oastTag)
+	if err != nil {
+		// Fail closed: a failed receipt lookup is never an upgrade.
+		return db.VerificationNotAssessed, "oast receipt lookup failed: " + err.Error()
+	}
+	if hit {
+		return db.VerificationVerified, fmt.Sprintf("S3 OAST receipt: tag %s observed", oastTag)
+	}
+	return status, note
+}
+
+// assessFindingVerificationS1 is the S1 (quote-in-body) check, extracted so the
+// S3 OAST-receipt fallback can wrap it.
+func (s *Server) assessFindingVerificationS1(ctx context.Context, findingID int64, poe int, quotes []string) (status, note string) {
 	tr, err := s.m.pg.GetFindingTraffic(ctx, findingID)
 	if err != nil {
 		return db.VerificationNotAssessed, "binding read error: " + err.Error()
@@ -232,7 +259,7 @@ func (s *Server) seedFindingVerificationSchema() {
 	if err := json.Unmarshal(obj["properties"], &properties); err != nil {
 		return
 	}
-	for _, name := range []string{"poe_level", "evidence_quotes"} {
+	for _, name := range []string{"poe_level", "evidence_quotes", "oast_tag"} {
 		if len(properties[name]) == 0 {
 			continue
 		}

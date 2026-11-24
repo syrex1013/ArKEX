@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"net/http"
 	"os"
@@ -25,6 +26,22 @@ func (s *Server) oastServer() *oast.Server {
 		select {
 		case s.archiveWake <- struct{}{}:
 		default:
+		}
+		// Planner wake: an OAST hit is out-of-band evidence the agent minted a
+		// payload for. Resolve the task through the DB (Callback carries no task
+		// id; the correlation row does) and inject a planner trigger.
+		if s.m == nil || s.m.pg == nil {
+			return
+		}
+		taskID, err := s.oast.TaskIDForTag(context.Background(), cb.PayloadTag)
+		if err != nil || taskID == "" {
+			return
+		}
+		s.m.mu.RLock()
+		t := s.m.tasks[taskID]
+		s.m.mu.RUnlock()
+		if t != nil {
+			t.NotifyOASTHit(cb)
 		}
 	})
 	return s.oast
@@ -253,10 +270,6 @@ func (s *Server) labAuthVault(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/lab/auth-diff — differential GET across vault identities.
 func (s *Server) labAuthDiff(w http.ResponseWriter, r *http.Request) {
-	pg := s.pg(w)
-	if pg == nil {
-		return
-	}
 	var req struct {
 		TaskID string   `json:"task_id"`
 		URL    string   `json:"url"`
@@ -266,17 +279,12 @@ func (s *Server) labAuthDiff(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "task_id and url required")
 		return
 	}
-	if !looksLikeHTTPURL(req.URL) {
-		writeErr(w, 400, "url must be http(s)")
-		return
-	}
-	vault, err := authmatrix.New(pg.DB, s.vaultKey())
+	cands, err := s.authDiffGET(r.Context(), req.TaskID, req.URL, req.Labels)
 	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	cands, err := authmatrix.NewAnalyzer(vault, s.m.MCPTaskProxy()).DiffGET(r.Context(), req.TaskID, req.URL, req.Labels)
-	if err != nil {
+		if _, ok := err.(errStatic); ok {
+			writeErr(w, 400, err.Error())
+			return
+		}
 		writeErr(w, 500, err.Error())
 		return
 	}

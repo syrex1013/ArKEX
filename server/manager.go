@@ -28,6 +28,8 @@ import (
 	"github.com/Autumn-27/artex/enrich"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/notify"
+	"github.com/Autumn-27/artex/offensive/oast"
 	"github.com/Autumn-27/artex/sandbox"
 	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/artex/traffic/rewrite"
@@ -2094,9 +2096,11 @@ func (m *Manager) SetTaskStatus(id, status string) error {
 	if err := m.pg.SetStatus(n, status); err != nil {
 		return err
 	}
+	prev := ""
 	m.mu.Lock()
 	if t := m.tasks[id]; t != nil {
 		t.updateLifecycle(func(state *taskLifecycleState) {
+			prev = state.Status
 			state.Status = status
 			// Mirror the DB's completed_at stamp on the live handle so the DTO shows
 			// the finish time without a reload (terminal -> stamp once; else clear).
@@ -2110,6 +2114,22 @@ func (m *Manager) SetTaskStatus(id, status string) error {
 		})
 	}
 	m.mu.Unlock()
+	// Producer for the task_status_changed notification kind: the renderer
+	// (server/notifier.go) and fan-out already support it, but nothing wrote
+	// the event. Fire-and-forget — a status change must never block or fail on
+	// notification delivery. finding_id=0 (fan-out handles NULL finding rows).
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := m.pg.AddNotificationEvent(ctx, notify.EventTaskStatusChanged, 0, notify.Snapshot{
+			Kind:       notify.EventTaskStatusChanged,
+			TaskID:     n,
+			FromStatus: prev,
+			ToStatus:   status,
+		}); err != nil {
+			log.Printf("[notify] failed to record task_status_changed event for task %d: %v", n, err)
+		}
+	}()
 	if pgdb.IsTerminal(status) {
 		m.extractLessons(n)
 	}
@@ -2471,6 +2491,22 @@ func (t *Task) NotifyFinding(intentID int64, summary string) {
 	t.Notify()
 }
 
+// NotifyOASTHit records that an out-of-band callback correlated to one of the
+// task's OAST payloads, then wakes the planner — the hit is evidence the agent
+// should chase (blind SSRF/XXE/SQLi receipts) without waiting for a poll.
+func (t *Task) NotifyOASTHit(cb *oast.Callback) {
+	if cb == nil {
+		return
+	}
+	t.trigMu.Lock()
+	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{
+		Kind:   "oast_hit",
+		Detail: fmt.Sprintf("OAST callback hit: payload=%s protocol=%s remote=%s", cb.PayloadTag, cb.Protocol, cb.RemoteAddr),
+	})
+	t.trigMu.Unlock()
+	t.Notify()
+}
+
 // NotifyGoal records that one OR MORE goals were added in a single set_goals call —
 // by the human via the main agent — then wakes the planner, so the next round spells
 // out "the human added N goals: ..." instead of the planner having to spot new open goals in
@@ -2552,4 +2588,17 @@ func (t *Task) drainTriggers() []agent.TriggerEvent {
 	ev := t.pendingTriggers
 	t.pendingTriggers = nil
 	return ev
+}
+
+// requeueTriggers puts drained trigger events back at the front of the queue.
+// Used when a planning round fails before consuming them: without this a
+// transient LLM error would silently swallow the done/finding events the
+// round was woken for. Order is preserved (drained order, then anything new).
+func (t *Task) requeueTriggers(ev []agent.TriggerEvent) {
+	if len(ev) == 0 {
+		return
+	}
+	t.trigMu.Lock()
+	defer t.trigMu.Unlock()
+	t.pendingTriggers = append(ev, t.pendingTriggers...)
 }

@@ -270,6 +270,11 @@ func renderTriggers(evs []TriggerEvent, env dataEnvelope, look triggerLookup) st
 		case "finding":
 			b.WriteString(fmt.Sprintf("\n- The worker of intent #%d reported a finding:\n%s\n%s", ev.IntentID,
 				env.wrap("intent_summary", look.intentSummary(ev.IntentID)), env.wrap("finding", ev.Detail)))
+		case "oast_hit":
+			// Out-of-band callback evidence (payload minted via oast_payload):
+			// the detail line is agent-side observation data, so it stays framed.
+			b.WriteString(fmt.Sprintf("\n- An out-of-band (OAST) callback arrived:\n%s — the target interacted with a callback payload this task minted; treat it as evidence of out-of-band interaction (blind SSRF/XXE/SQLi/RCE), correlate it to the intent/hypothesis that planted the payload, and chase the corresponding direction (have the worker confirm and report the finding).\n(List hits via list_oast_callbacks.)",
+				env.wrap("oast_hit", ev.Detail)))
 		case "cancelled":
 			// For the intent content prefer the Summary captured at deletion time (after a real delete the node no longer exists, so intentSummary can't find it).
 			sm := ev.Summary

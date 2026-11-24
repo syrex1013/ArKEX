@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/offensive/authmatrix"
 	"github.com/Autumn-27/artex/offensive/desync"
 	"github.com/Autumn-27/artex/offensive/zeroday"
 )
@@ -92,6 +94,52 @@ func (l labAgentTools) LaunchFuzz(ctx context.Context, taskID, kind, target, tar
 	})
 }
 
+// --- OAST backend (agent.OASTBackend) ---
+
+func (l labAgentTools) Domain() string { return l.s.oastServer().Domain() }
+
+func (l labAgentTools) GeneratePayload(ctx context.Context, tag, taskID, intentID string) (string, error) {
+	return l.s.oastServer().GeneratePayload(ctx, tag, taskID, intentID)
+}
+
+func (l labAgentTools) ListRecent(ctx context.Context, taskID string, limit int) (any, error) {
+	return l.s.oastServer().ListRecent(ctx, taskID, limit)
+}
+
+func (l labAgentTools) WaitCallback(ctx context.Context, tag string, timeout time.Duration) (any, error) {
+	return l.s.oastServer().WaitForCallback(ctx, tag, timeout)
+}
+
+func (l labAgentTools) HasCallback(ctx context.Context, tag string) (bool, error) {
+	return l.s.oastServer().HasCallback(ctx, tag)
+}
+
+// --- auth-matrix diff (shared by the operator endpoint and the agent tool) ---
+
+// authDiffGET runs the differential GET across the task vault's identities.
+// One implementation, two callers: the operator HTTP endpoint and the agent tool.
+func (s *Server) authDiffGET(ctx context.Context, taskID, url string, labels []string) (any, error) {
+	if s.m == nil || s.m.pg == nil {
+		return nil, errManagerUnavailable
+	}
+	if !looksLikeHTTPURL(url) {
+		return nil, errStatic("url must be http(s)")
+	}
+	vault, err := authmatrix.New(s.m.pg.DB, s.vaultKey())
+	if err != nil {
+		return nil, err
+	}
+	return authmatrix.NewAnalyzer(vault, s.m.MCPTaskProxy()).DiffGET(ctx, taskID, url, labels)
+}
+
+func (l labAgentTools) AuthDiff(ctx context.Context, taskID, url string, labels []string) (any, error) {
+	return l.s.authDiffGET(ctx, taskID, url, labels)
+}
+
 // labTools returns the agent-facing lab technique backend (never nil; tool
 // calls degrade gracefully while s.m is missing).
 func (s *Server) labTools() agent.LabTechniques { return labAgentTools{s} }
+
+// oastAgentBackend returns the agent-facing OAST backend (never nil; tool
+// calls degrade gracefully while s.m is missing).
+func (s *Server) oastAgentBackend() agent.OASTBackend { return labAgentTools{s} }

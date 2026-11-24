@@ -25,6 +25,9 @@ type LabTechniques interface {
 	CPGSinks(ctx context.Context, taskID string) (any, error)
 	// LaunchFuzz queues a fuzz job and returns its job id.
 	LaunchFuzz(ctx context.Context, taskID, kind, target, targetKind string) (int64, error)
+	// AuthDiff runs a differential GET across the task vault's identities and
+	// returns the auth-variance candidates.
+	AuthDiff(ctx context.Context, taskID, url string, labels []string) (any, error)
 }
 
 // SetLab wires the lab technique backend for this ToolSet. nil (the zero value)
@@ -139,5 +142,34 @@ func (t *ToolSet) fuzzTool() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			return actool.Text(fmt.Sprintf("fuzz job %d queued (kind %s)", id, a.Kind)), nil
+		})
+}
+
+// authMatrixDiffTool diffs one URL's response across the task vault's stored
+// identities to surface auth-variance candidates (endpoints where identities
+// see different content —idor/access-control leads).
+func (t *ToolSet) authMatrixDiffTool() actool.CoreTool {
+	return readTool("auth_matrix_diff",
+		"Run a differential GET against a target URL replayed with each identity stored in the task's auth vault, and return the auth-variance candidates (URLs where identities observe materially different responses — access-control/IDOR leads). Manage identities via the UI's auth vault first; use the returned labels there. Read-only probes against in-scope targets.",
+		obj(map[string]any{
+			"url":    str("absolute http(s) URL to diff across the vault identities"),
+			"labels": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "optional: restrict to these vault identity labels (default: all)"},
+		}, "url"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.lab == nil {
+				return actool.Errorf("auth_matrix_diff is currently unavailable"), nil
+			}
+			var a struct {
+				URL    string   `json:"url"`
+				Labels []string `json:"labels"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil || strings.TrimSpace(a.URL) == "" {
+				return actool.Errorf("url is required"), nil
+			}
+			res, err := t.lab.AuthDiff(ctx, strconv.FormatInt(t.taskID, 10), strings.TrimSpace(a.URL), a.Labels)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return labJSON(res)
 		})
 }

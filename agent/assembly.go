@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -87,9 +91,45 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 	out = applyToolRAG(ctx, agentKey, out, def.Deferred, bm25Score)
 	out, def.FindingGuidance = findingWorkflowTools(agentKey, out)
 	for i, t := range out {
-		out[i] = guardPanic(t)
+		out[i] = timeoutTool(guardPanic(t))
 	}
 	return out, def, cleanup
+}
+
+// defaultToolTimeout bounds every tool call (300s): a hung handler otherwise
+// blocks the worker turn until the run's MaxDuration (unlimited for the
+// planner/main agent). ARKEX_TOOL_TIMEOUT_SECONDS overrides it at startup.
+const defaultToolTimeout = 300 * time.Second
+
+var toolTimeout = func() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("ARKEX_TOOL_TIMEOUT_SECONDS"))
+	if raw == "" {
+		return defaultToolTimeout
+	}
+	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	log.Printf("[tools] invalid ARKEX_TOOL_TIMEOUT_SECONDS %q; using default %s", raw, defaultToolTimeout)
+	return defaultToolTimeout
+}()
+
+// timeoutTool wraps a tool Call in a context deadline. Bash keeps its own
+// shorter timeout, so the inner deadline wins there; everything else gets this
+// backstop. Applied in AugmentTools, so it covers every tool: domain, SDK, MCP
+// and skill. A timed-out call surfaces as an ordinary error-result, never a
+// transport error.
+func timeoutTool(t actool.CoreTool) actool.CoreTool { return &timedTool{CoreTool: t} }
+
+type timedTool struct{ actool.CoreTool }
+
+func (t *timedTool) Call(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
+	cctx, cancel := context.WithTimeout(ctx, toolTimeout)
+	defer cancel()
+	res, err := t.CoreTool.Call(cctx, in, tc)
+	if err != nil && cctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		return actool.Errorf(fmt.Sprintf("tool %s timed out after %s (this call has failed; try narrower arguments or another tool)", t.Name(), toolTimeout)), nil
+	}
+	return res, err
 }
 
 // guardPanic turns a panicking tool handler into an ordinary tool error. The

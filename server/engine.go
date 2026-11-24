@@ -1032,6 +1032,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s planning error: %v", t.ID, err)
+			// The round never consumed the drained triggers; put them back so
+			// the retry (heartbeat or next edge) still sees what woke it.
+			t.requeueTriggers(triggers)
 		case met:
 			log.Printf("[planner] task %s judged all goals met: %s", t.ID, reason)
 			// All goals met → persist the task state as done (the frontend DTO shows this terminal state first).
@@ -1521,9 +1524,20 @@ func sleepCtx(ctx context.Context, d time.Duration) (done bool) {
 }
 
 func (e *Engine) claimNext(t *Task, name string) (*db.Node, string) {
-	fr, _ := t.Store.Frontier(20)
+	fr, err := t.Store.Frontier(20)
+	if err != nil {
+		log.Printf("[engine] task %s frontier read failed: %v", t.ID, err)
+		return nil, ""
+	}
 	for _, in := range fr {
-		if token, _ := t.Store.ClaimIntentToken(in.ID, name); token != "" {
+		token, err := t.Store.ClaimIntentToken(in.ID, name)
+		if err != nil {
+			// A benign race (another worker claimed it first) surfaces as an
+			// error too; only unexpected failures are worth a log line.
+			log.Printf("[engine] task %s claim intent %d failed: %v", t.ID, in.ID, err)
+			continue
+		}
+		if token != "" {
 			return in, token
 		}
 	}

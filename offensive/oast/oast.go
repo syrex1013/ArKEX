@@ -200,3 +200,42 @@ func (s *Server) PendingCount(ctx context.Context) (int64, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM oast_callbacks WHERE protocol = 'pending'`).Scan(&n)
 	return n, err
 }
+
+// taskTagMatches mirrors dispatch's tag matching: the recorded payload tag may
+// be hit under its bare form or the host form "tag[:port]". The parentheses
+// matter: callers add AND-conditions that must apply to both disjuncts.
+const taskTagMatch = `(payload_tag = $1 OR payload_tag = split_part($1, ':', 1))`
+
+// TaskIDForTag resolves a payload tag (full payload host or its bare form) to
+// the task that registered it. Empty string = unknown tag.
+func (s *Server) TaskIDForTag(ctx context.Context, tag string) (string, error) {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || s.db == nil {
+		return "", nil
+	}
+	var taskID string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT task_id FROM oast_callbacks WHERE `+taskTagMatch+` LIMIT 1`, tag).Scan(&taskID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return taskID, nil
+}
+
+// HasCallback reports whether the payload tag has an actual received
+// interaction (protocol moved off 'pending'). Pending registrations return false.
+func (s *Server) HasCallback(ctx context.Context, tag string) (bool, error) {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || s.db == nil {
+		return false, nil
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM oast_callbacks WHERE `+taskTagMatch+` AND protocol <> 'pending'`, tag).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}

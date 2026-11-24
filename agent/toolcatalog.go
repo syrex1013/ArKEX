@@ -85,6 +85,7 @@ var defaultUnbound = map[string]bool{"goal_met": true}
 // desync/fuzz targets are real network connections, not platform records).
 var unseededTools = map[string]bool{
 	"desync_probe": true, "index_cpg_sinks": true, "list_cpg_sinks": true, "launch_fuzz": true,
+	"oast_payload": true, "list_oast_callbacks": true, "wait_oast_callback": true, "auth_matrix_diff": true,
 }
 
 // BuiltinToolSeeds dedupes and merges each agent's built-in tool set into the seed

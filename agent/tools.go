@@ -166,7 +166,8 @@ type ToolSet struct {
 	// lab, if set, exposes the host's offensive lab techniques (desync probing,
 	// CPG/taint indexing, fuzzing) to agents. nil = those tools report
 	// unavailable.
-	lab LabTechniques
+	lab  LabTechniques
+	oast OASTBackend
 	// steerWork, if set, queues a mid-run course-correction for the work running an
 	// intent id (engine callback, wired by the planner): the worker injects it before
 	// its next tool call and re-plans, without being killed. nil = tool unavailable.
@@ -1168,7 +1169,18 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 			if err := t.ts.PopulateFindingTrafficIDs([]*db.Node{n}); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			return jsonResult(n) // full payload incl. detail / evidence, plus explicit finding IDs
+			// Context-blowup guard: a node's detail/evidence payload can be
+			// arbitrarily large; cap what reaches the model's window.
+			b, err := json.Marshal(n)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			const nodeDetailMax = 24000
+			s := string(b)
+			if len([]rune(s)) > nodeDetailMax {
+				s = string([]rune(s)[:nodeDetailMax]) + "\n[truncated: node payload exceeds 24000 chars; use list_facts/compact views or query specific fields instead]"
+			}
+			return actool.Text(s), nil
 		})
 }
 

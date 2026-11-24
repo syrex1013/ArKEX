@@ -1256,6 +1256,8 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS verification_note TEXT NOT NULL DE
 -- tested and did not work; confidence_rationale is why the conclusion holds.
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS counterevidence TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS confidence_rationale TEXT NOT NULL DEFAULT '';
+-- OAST payload tag claimed as the finding's out-of-band (S3) proof; empty = none.
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS oast_tag TEXT NOT NULL DEFAULT '';
 -- Report stage after triage (none / submitted / accepted / rejected / duplicate).
 -- Separate from status so a finding can be confirmed and submitted at once; RSI
 -- lessons still read status. Server whitelist, no CHECK (same as status).
