@@ -142,7 +142,9 @@ func assertEmbeddedApplied(t *testing.T, d *DB) []appliedMigration {
 		{11, "0011_arkex_offensive.sql"}, {12, "0012_team_chat.sql"}, {13, "0013_engagements.sql"},
 		{14, "0014_engagements_align.sql"}, {15, "0015_plus_pl_engagement.sql"}, {16, "0016_engagement_id_nullable.sql"},
 		{17, "0017_professional_templates.sql"}, {18, "0018_full_auto_pentest.sql"},
-		{19, "0019_finding_oast_tag.sql"}}
+		{19, "0019_finding_oast_tag.sql"}, {20, "0020_long_horizon_swarm.sql"},
+		{21, "0021_engagement_records.sql"},
+		{22, "0022_knowledge_evidence.sql"}}
 	if len(applied) != len(want) {
 		t.Fatalf("schema_migrations = %+v, want versions 1 to %d", applied, len(want))
 	}

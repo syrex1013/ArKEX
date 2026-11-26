@@ -14,51 +14,19 @@ export type ResolvedThemeMode = "light" | "dark";
 
 export const THEME_PRESET_OPTIONS = [
   {
-    label: "Default",
-    value: "default",
-    primary: {
-      light: "oklch(0.205 0 0)",
-      dark: "oklch(0.922 0 0)",
-    },
-  },
-  {
-    label: "Brutalist",
-    value: "brutalist",
-    primary: {
-      light: "oklch(0.6489 0.237 26.9728)",
-      dark: "oklch(0.7044 0.1872 23.1858)",
-    },
-  },
-  {
-    label: "Silent Sentinel",
-    value: "silent-sentinel",
-    primary: {
-      light: "#3b6ea5",
-      dark: "#98cbff",
-    },
-  },
-  {
-    label: "Soft Pop",
-    value: "soft-pop",
-    primary: {
-      light: "oklch(0.5106 0.2301 276.9656)",
-      dark: "oklch(0.6801 0.1583 276.9349)",
-    },
-  },
-  {
-    label: "Tangerine",
-    value: "tangerine",
-    primary: {
-      light: "oklch(0.64 0.17 36.44)",
-      dark: "oklch(0.64 0.17 36.44)",
-    },
-  },
-  {
     label: "ThreatVector",
     value: "threatvector",
     primary: {
-      light: "#ff0000",
-      dark: "#ff0000",
+      light: "#d40511",
+      dark: "#ff3b2f",
+    },
+  },
+  {
+    label: "Dracula",
+    value: "dracula",
+    primary: {
+      light: "#644ac9",
+      dark: "#bd93f9",
     },
   },
 ] as const;
@@ -66,5 +34,12 @@ export const THEME_PRESET_OPTIONS = [
 export const THEME_PRESET_VALUES = THEME_PRESET_OPTIONS.map((p) => p.value);
 
 export type ThemePreset = (typeof THEME_PRESET_OPTIONS)[number]["value"];
+
+export const DEFAULT_THEME_PRESET: ThemePreset = "threatvector";
+
+/** Coerce any persisted or stale preset value to a currently shipped style. */
+export function normalizeThemePreset(value: unknown): ThemePreset {
+  return THEME_PRESET_VALUES.includes(value as ThemePreset) ? (value as ThemePreset) : DEFAULT_THEME_PRESET;
+}
 
 // --- generated:themePresets:end ---

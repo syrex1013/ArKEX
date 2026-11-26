@@ -177,7 +177,7 @@ func (d *DB) ListConversations(engagementID int64) ([]*Conversation, error) {
 		where = ` WHERE engagement_id = $1`
 		args = append(args, engagementID)
 	}
-	rows, err := d.Query(`SELECT ` + convCols + ` FROM conversations` + where + `
+	rows, err := d.Query(`SELECT `+convCols+` FROM conversations`+where+`
 ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC NULLS LAST, updated_at DESC, id DESC`, args...)
 	if err != nil {
 		return nil, err

@@ -173,7 +173,7 @@ type TrafficExchangeDTO struct {
 	ContentType string `json:"content_type"`
 	RespLen     int    `json:"resp_len"`
 	Rewritten   bool   `json:"rewritten"`
-	Via         string `json:"via"`   // 'proxy' | 'external'; '' = recorded before this column existed
+	Via         string `json:"via"`    // 'proxy' | 'external'; '' = recorded before this column existed
 	Egress      string `json:"egress"` // capture-time egress: 'tunneled' | 'proxied:<host>' | 'direct'; '' = unknown
 }
 

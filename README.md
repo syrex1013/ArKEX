@@ -283,6 +283,43 @@ worker remains confined to the intent it claimed.
   </details>
 - **Task categories, templates, relations and archives** for repeatable engagements.
 
+### Long-horizon engagements
+
+A single task can run for weeks; an engagement outlives every task in it. ARTEX keeps the
+engagement-level history separate from the task graph so the work stays resumable and auditable.
+
+- **Append-only engagement record**: scope revisions, operator decisions, milestones and notes are
+  records with an owner and a status (`open`, `accepted`, `superseded`, `done`). Accepting a new
+  scope revision or decision supersedes the previous one in the same transaction, so exactly one
+  revision is current. A milestone only completes once completion criteria are set.
+- **Timeline and review queue**: `/api/engagements/{id}/timeline` unions task outcomes, new
+  findings, retest verdicts, checkpoints and coverage gaps into one dated feed with deep links back
+  to the task. A review cursor records what the operator has already seen; the review queue shows
+  "changes since my last review" instead of replaying everything.
+- **Deterministic handoff brief**: `/api/engagements/{id}/brief` assembles the active scope, open
+  decisions and milestones, current task outcomes (findings by severity, retests, tokens, tool
+  calls), and unresolved coverage gaps with no LLM in the loop. The same brief is injected into
+  planning and worker context, so a resumed task starts from the operator's decisions rather than
+  re-deriving them.
+- **Evidence-backed project memory**: `knowledge_items` carry provenance rows
+  (`task`, `finding`, `checkpoint`, `operator`, `extraction`); `support` counts distinct sources
+  rather than blind upserts, so re-running extraction is idempotent. Items have a lifecycle
+  (`current`, `disputed`, `due_revalidation`), can be superseded, and are ranked current-first.
+  Retrieval is gated by company, engagement and asset scope before ranking, and the `remember`
+  tool refuses a write that no task could ever retrieve.
+- **Explainable swarm, one operator queue**: `/api/tasks/{id}/swarm` reports, per agent, the intent
+  it is working on, its last durable checkpoint and a wait reason (`blocked by task N`, `waiting on
+  operator approval`, stale heartbeat, idle), plus progress (intents settled/open, verified
+  findings, coverage gaps, blocked agents). `/api/engagements/{id}/queue` collapses every human
+  decision — approvals, pending findings, open decisions and milestones, validating attack paths,
+  coverage gaps — into one ordered list.
+- **Archives that survive the engagement**: a task archive now carries swarm events, discovery,
+  attack paths and steps, the coverage ledger, RSI usage, knowledge injections, project knowledge
+  (merged back by identity, never overwriting newer knowledge), findings and their retest history.
+  Restoring an archived task returns it to the same engagement with its brief, retests and coverage
+  gaps intact; `TestEngagementHandoffAcrossArchive` exercises archive → restore → scope change →
+  review cursor in one run.
+
 ### Platform
 
 - **LLM profiles with failover**: Anthropic, OpenAI, OpenAI-compatible relays and keyless Ollama;

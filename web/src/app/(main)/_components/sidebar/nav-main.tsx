@@ -32,6 +32,7 @@ import {
 import { t } from "@/i18n";
 import { api } from "@/lib/api";
 import { setVisibleInterval } from "@/lib/polling";
+import { openEventStream } from "@/lib/sse";
 import { cn } from "@/lib/utils";
 import type {
   NavBadge,
@@ -193,6 +194,26 @@ function InterceptPendingBadge() {
   );
 }
 
+// RunningTasksBadge follows /api/tasks/stream (SSE) and shows the live count of
+// running tasks beside the Tasks nav item. Zero stays hidden.
+function RunningTasksBadge() {
+  const [count, setCount] = React.useState(0);
+  React.useEffect(() => {
+    const stream = openEventStream<{ running: number }>({
+      path: "/api/tasks/stream",
+      onEvent: (event) => setCount(event.data.running),
+    });
+    return () => stream.close();
+  }, []);
+  if (count === 0) return null;
+  return (
+    <SidebarMenuBadge className="flex h-4.5 min-w-[18px] items-center justify-center gap-1 rounded-full bg-success/15 px-1 font-semibold text-[10px] text-success leading-none ring-1 ring-success/30">
+      <span className="size-1.5 animate-pulse rounded-full bg-success" aria-hidden />
+      {count > 99 ? "99+" : count}
+    </SidebarMenuBadge>
+  );
+}
+
 function NavLinkItem({ item, isActive, showIconFallback }: NavLinkItemProps) {
   return (
     <SidebarMenuItem>
@@ -207,9 +228,17 @@ function NavLinkItem({ item, isActive, showIconFallback }: NavLinkItemProps) {
           <span>{item.title}</span>
         </Link>
       </SidebarMenuButton>
-      {item.id === "approvals" ? <InterceptPendingBadge /> : <NavItemBadge badge={item.badge} />}
+      <NavLinkBadge item={item} />
     </SidebarMenuItem>
   );
+}
+
+// NavLinkBadge picks the right badge slot for a top-level nav link: the live
+// intercept-approval count, the live running-task count, or a static badge.
+function NavLinkBadge({ item }: { item: NavMainLinkItem }) {
+  if (item.id === "approvals") return <InterceptPendingBadge />;
+  if (item.id === "tasks") return <RunningTasksBadge />;
+  return <NavItemBadge badge={item.badge} />;
 }
 
 function NavLinkIcon({ item, showFallback }: NavLinkIconProps) {

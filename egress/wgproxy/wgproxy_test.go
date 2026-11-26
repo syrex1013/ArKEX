@@ -3,6 +3,7 @@ package wgproxy
 import (
 	"context"
 	"encoding/base64"
+	"net"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,100 @@ func TestHexBytes(t *testing.T) {
 	}
 	if got := hexBytes(nil); got != "" {
 		t.Fatalf("hexBytes(nil) = %q, want \"\"", got)
+	}
+}
+
+func TestParseForwardRequest(t *testing.T) {
+	cases := []struct {
+		name       string
+		head       string
+		wantTarget string
+		wantHead   string
+		wantOK     bool
+	}{
+		{
+			name:       "absolute-form GET keeps existing Host header",
+			head:       "GET http://www.plus.pl/ HTTP/1.1\r\nHost: www.plus.pl\r\nUser-Agent: x\r\n\r\n",
+			wantTarget: "www.plus.pl:80",
+			wantHead:   "GET / HTTP/1.1\r\nHost: www.plus.pl\r\nUser-Agent: x\r\n\r\n",
+			wantOK:     true,
+		},
+		{
+			name:       "missing Host header is synthesized",
+			head:       "GET http://www.plus.pl/blad-polaczenia_W500 HTTP/1.1\r\n\r\n",
+			wantTarget: "www.plus.pl:80",
+			wantHead:   "GET /blad-polaczenia_W500 HTTP/1.1\r\nHost: www.plus.pl\r\n\r\n",
+			wantOK:     true,
+		},
+		{
+			name:       "port and query pass through",
+			head:       "POST http://dmc.plus.pl:8080/DMC/services?a=1 HTTP/1.0\r\nContent-Length: 0\r\n\r\n",
+			wantTarget: "dmc.plus.pl:8080",
+			wantHead:   "POST /DMC/services?a=1 HTTP/1.0\r\nHost: dmc.plus.pl:8080\r\nContent-Length: 0\r\n\r\n",
+			wantOK:     true,
+		},
+		{
+			name:       "bare authority becomes / on port 80",
+			head:       "HEAD http://ustaw.plus.pl HTTP/1.1\r\nHost: ustaw.plus.pl\r\n\r\n",
+			wantTarget: "ustaw.plus.pl:80",
+			wantHead:   "HEAD / HTTP/1.1\r\nHost: ustaw.plus.pl\r\n\r\n",
+			wantOK:     true,
+		},
+		{
+			name:   "absolute-form https is refused",
+			head:   "GET https://www.plus.pl/ HTTP/1.1\r\nHost: www.plus.pl\r\n\r\n",
+			wantOK: false,
+		},
+		{
+			name:   "origin-form is refused",
+			head:   "GET / HTTP/1.1\r\nHost: www.plus.pl\r\n\r\n",
+			wantOK: false,
+		},
+		{
+			name:   "two-field request line is refused",
+			head:   "GET http://www.plus.pl/\r\n\r\n",
+			wantOK: false,
+		},
+		{
+			name:       "body beyond the terminator is preserved",
+			head:       "POST http://www.plus.pl/x HTTP/1.1\r\nHost: www.plus.pl\r\n\r\nBODY",
+			wantTarget: "www.plus.pl:80",
+			wantHead:   "POST /x HTTP/1.1\r\nHost: www.plus.pl\r\n\r\nBODY",
+			wantOK:     true,
+		},
+	}
+	for _, c := range cases {
+		target, out, ok := parseForwardRequest([]byte(c.head))
+		if ok != c.wantOK {
+			t.Fatalf("%s: ok = %v, want %v", c.name, ok, c.wantOK)
+		}
+		if !c.wantOK {
+			continue
+		}
+		if target != c.wantTarget {
+			t.Fatalf("%s: target = %q, want %q", c.name, target, c.wantTarget)
+		}
+		if string(out) != c.wantHead {
+			t.Fatalf("%s: rewritten head = %q, want %q", c.name, string(out), c.wantHead)
+		}
+	}
+}
+
+func TestCompleteHeadAccumulates(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() {
+		client.Write([]byte("GET http://x/ HTTP/1.1\r\nHost: x\r\n"))
+		client.Write([]byte("\r\nbody-start"))
+		client.Close()
+	}()
+	head, ok := completeHead(server, []byte("GET http://x/ HTTP/1.1\r\n"))
+	if !ok {
+		t.Fatal("completeHead did not find the terminator")
+	}
+	if !strings.Contains(string(head), "body-start") {
+		t.Fatalf("head = %q, want body bytes included", string(head))
 	}
 }
 

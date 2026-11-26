@@ -26,9 +26,11 @@ type taskAgentBundle struct {
 	plannerRuntime *taskLLMRuntime
 	workerRuntime  *taskLLMRuntime
 	mainRuntime    *taskLLMRuntime
+	chainRuntime   *taskLLMRuntime
 	pl             *agent.Planner
 	wk             *agent.Worker
 	main           *agent.MainAgent
+	ch             *agent.Chain
 }
 
 type llmAuditProfile struct {
@@ -879,18 +881,37 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 		// proxy + web-search opts on the cached bundle so the next round does not
 		// keep a stale direct dial after the tunnel comes up.
 		proxy, ca := s.m.ProxyAddr(), s.m.ProxyCACert()
-		bundle.wk.SetProxy(proxy, ca)
-		bundle.pl.SetProxy(proxy, ca)
-		bundle.main.SetProxy(proxy, ca)
-		bundle.wk.SetWebSearch(s.webSearchFor("worker"))
-		bundle.pl.SetWebSearch(s.webSearchFor("planner"))
-		bundle.main.SetWebSearch(s.webSearchFor("mainagent"))
+		if bundle.wk != nil {
+			bundle.wk.SetProxy(proxy, ca)
+		}
+		if bundle.pl != nil {
+			bundle.pl.SetProxy(proxy, ca)
+		}
+		if bundle.main != nil {
+			bundle.main.SetProxy(proxy, ca)
+		}
+		if bundle.ch != nil { // a hand-built bundle (tests) may carry no chain agent
+			bundle.ch.SetProxy(proxy, ca)
+		}
+		if bundle.wk != nil {
+			bundle.wk.SetWebSearch(s.webSearchFor("worker"))
+		}
+		if bundle.pl != nil {
+			bundle.pl.SetWebSearch(s.webSearchFor("planner"))
+		}
+		if bundle.main != nil {
+			bundle.main.SetWebSearch(s.webSearchFor("mainagent"))
+		}
+		if bundle.ch != nil {
+			bundle.ch.SetWebSearch(s.webSearchFor("chain"))
+		}
 		return bundle
 	}
 	goalRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "goals"}
 	plannerRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "planner"}
 	workerRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "worker"}
 	mainRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "mainagent"}
+	chainRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "chain"}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	window := workerRuntime.CompactionWindow()
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
@@ -902,9 +923,11 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
 	wk.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	wk.SetWebSearch(s.webSearchFor("worker"))
-	wk.SetConstraintInject(s.constraintInjectWorker) // operation-constraint injection into the worker (configurable, on by default)
-	wk.SetLab(s.labTools())                          // desync/CPG/fuzz lab techniques callable from worker intents
-	wk.SetOast(s.oastAgentBackend())                 // OAST payload/callback tools callable from worker intents
+	wk.SetConstraintInject(s.constraintInjectWorker)                         // operation-constraint injection into the worker (configurable, on by default)
+	wk.SetKnowledgeMode(s.m.KnowledgeInjectMode)                             // project-knowledge block: off | shadow | inject, read per run
+	wk.SetSystemEvent(func(ev db.AgentEvent) { s.engine.agentEvent(t, ev) }) // checkpoint events reach the swarm stream live, not only on reconnect
+	wk.SetLab(s.labTools())                                                  // desync/CPG/fuzz lab techniques callable from worker intents
+	wk.SetOast(s.oastAgentBackend())                                         // OAST payload/callback tools callable from worker intents
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
 	pl.SetFindingRecorder(s.evidenceStore())
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
@@ -920,9 +943,10 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	// (agentsForTask) is exactly what the engine actually drives through the authoritative
 	// resolver, so the Compactor must hook in here. The planner provider goes through task routing (§4: same model as the agent, resolved with the task's LLM chain); compaction uses Complete to generate the body in one shot.
 	pl.SetCompactor(agent.NewCompactor(plannerRuntime, "task-router"))
+	pl.SetKnowledgeInjectMode(s.m.KnowledgeInjectMode) // project-knowledge block: off | shadow | inject, read per round
 	// RSI shadow mode: select evidence-backed lessons for this task. Off by
 	// default; shadow logs what would be shown, inject appends the block.
-	s.wireTaskLessons(t, wk, pl)
+	s.wireTaskContext(t, wk, pl)
 	main := agent.NewMainAgent(mainRuntime, "task-router", s.m.dir, tx, mainRuntime.CompactionWindow(), s.agentMaxTurns("mainagent"))
 	main.SetFindingRecorder(s.evidenceStore())
 	main.SetCompactionWindowResolver(mainRuntime.CompactionWindow)
@@ -933,9 +957,25 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	main.SetWebSearch(s.webSearchFor("mainagent"))
 	main.SetSteerWork(s.engine.SteerWork) // steer_work: real-time course correction on running work by a human
+	ch := agent.NewChain(chainRuntime, "task-router", s.m.dir, tx, chainRuntime.CompactionWindow(), s.agentMaxTurns("chain"))
+	ch.SetCompactionWindowResolver(chainRuntime.CompactionWindow)
+	ch.SetNonStreaming(chainRuntime.nonStreaming)
+	ch.SetMaxTokens(chainRuntime.maxTokens)
+	ch.SetNoaEnabled(s.m.NoaCompactionEnabled) // read every run, like the other agents
+	ch.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	ch.SetWebSearch(s.webSearchFor("chain"))
+	ch.SetConstraintInject(s.constraintInjectPlanner) // operation-constraint injection (same setting as the planner)
+	// The engine resolves the chain agent through the bundle, same indirection as
+	// planner/worker: an exhausted task chain yields nil and the chain round skips.
+	s.engine.SetChainResolver(func(task *Task) *agent.Chain {
+		if !s.taskRuntimeAvailable(task, "chain") {
+			return nil
+		}
+		return s.agentsForTask(task).ch
+	})
 	bundle := &taskAgentBundle{
 		runtime: goalRuntime, plannerRuntime: plannerRuntime, workerRuntime: workerRuntime,
-		mainRuntime: mainRuntime, pl: pl, wk: wk, main: main,
+		mainRuntime: mainRuntime, chainRuntime: chainRuntime, pl: pl, wk: wk, main: main, ch: ch,
 	}
 	s.taskAgents[t.ID] = bundle
 	return bundle

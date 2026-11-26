@@ -345,6 +345,176 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	}
 }
 
+// Pre-0020 archives carry findings rows without the confidence/fingerprint
+// columns migration 0020 made NOT NULL. Restore must apply defaults instead of
+// failing with SQLSTATE 23502.
+func TestTaskArchiveRestorePre0020FindingDefaults(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		SkipPGUnavailable(t, err)
+	}
+	defer d.Close()
+	task, err := d.CreateTaskWithOptions("pre-0020 restore", "legacy fixture", TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = d.Exec(`DELETE FROM findings WHERE task_id=$1`, task.ID)
+		_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id=$1`, task.ID)
+		_ = d.DeleteTask(task.ID)
+	}()
+	if err := d.SetPaused(task.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	store := d.Exploration(task.ExplorationID)
+	nodeID, err := store.AddNode(KindFact, map[string]any{"summary": "legacy fact"}, 1, "confirmed", "worker", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.AddFinding(task.ID, nodeID, "idor", "legacy finding", SeverityHigh, "summary", "evidence", "worker", nil); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := d.QueueTaskArchive(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ClaimTaskArchiveJob(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := d.SnapshotTaskArchive(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a pre-0020 snapshot: findings rows predate the columns.
+	stripped, err := stripFindingColumns(snapshot.Tables["findings"], "confidence", "fingerprint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Tables["findings"] = stripped
+	if err := d.CompleteTaskArchive(archive.ID, snapshot, "/tmp/test-task.tar.zst", "abc", 100, 50); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.QueueTaskArchiveRestore(archive.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ClaimTaskArchiveJob(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RestoreTaskArchive(archive.ID, snapshot, int64((10 * time.Minute).Seconds())); err != nil {
+		t.Fatalf("restore pre-0020 findings: %v", err)
+	}
+	var confidence int
+	var fingerprint string
+	if err := d.QueryRow(`SELECT confidence,COALESCE(fingerprint,'') FROM findings WHERE task_id=$1`, task.ID).Scan(&confidence, &fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if confidence != 0 || fingerprint != "" {
+		t.Fatalf("expected NOT NULL defaults, got confidence=%d fingerprint=%q", confidence, fingerprint)
+	}
+	if err := d.CompleteTaskArchiveRestore(archive.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stripFindingColumns(raw json.RawMessage, keys ...string) (json.RawMessage, error) {
+	rows := []json.RawMessage{}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, err
+	}
+	for i, row := range rows {
+		fields := map[string]json.RawMessage{}
+		if err := json.Unmarshal(row, &fields); err != nil {
+			return nil, err
+		}
+		for _, key := range keys {
+			delete(fields, key)
+		}
+		rewritten, err := json.Marshal(fields)
+		if err != nil {
+			return nil, err
+		}
+		rows[i] = rewritten
+	}
+	return json.Marshal(rows)
+}
+
+func TestTaskArchiveRoundTripKeepsIntentCheckpoints(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		SkipPGUnavailable(t, err)
+	}
+	defer d.Close()
+	task, err := d.CreateTaskWithOptions("checkpoint roundtrip", "restore checkpoints", TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = d.Exec(`DELETE FROM findings WHERE task_id=$1`, task.ID)
+		_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id=$1`, task.ID)
+		_ = d.DeleteTask(task.ID)
+	}()
+	if err := d.SetPaused(task.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	store := d.Exploration(task.ExplorationID)
+	intentID, err := store.AddNode(KindIntent, map[string]any{"summary": "archived intent"}, 1, "running", "worker", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.AddCheckpoint(IntentCheckpoint{
+		TaskID: task.ID, IntentID: intentID, AgentName: "worker", Attempt: 2, Phase: "exploit",
+		NextStep: "retry upload", Done: []string{"fingerprint"}, Open: []string{"bypass"}, Artifacts: []string{"i1"}, ToolCalls: 9,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := d.QueueTaskArchive(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ClaimTaskArchiveJob(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := d.SnapshotTaskArchive(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.DataCounts["intent_checkpoints"] != 1 || rawRowCount(snapshot.Tables["intent_checkpoints"]) != 1 {
+		t.Fatalf("snapshot must retain checkpoints: counts=%v rows=%d", snapshot.DataCounts["intent_checkpoints"], rawRowCount(snapshot.Tables["intent_checkpoints"]))
+	}
+	if err := d.CompleteTaskArchive(archive.ID, snapshot, "/tmp/test-task.tar.zst", "abc", 100, 50); err != nil {
+		t.Fatal(err)
+	}
+	// Hot compaction deletes the intent node, FK-cascading the live checkpoint.
+	var liveCheckpoints int
+	if err := d.QueryRow(`SELECT count(*) FROM intent_checkpoints WHERE intent_id=$1`, intentID).Scan(&liveCheckpoints); err != nil {
+		t.Fatal(err)
+	}
+	if liveCheckpoints != 0 {
+		t.Fatalf("hot compaction must cascade checkpoints, found %d", liveCheckpoints)
+	}
+	if _, err := d.QueueTaskArchiveRestore(archive.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ClaimTaskArchiveJob(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RestoreTaskArchive(archive.ID, snapshot, int64((10 * time.Minute).Seconds())); err != nil {
+		t.Fatalf("restore checkpoints: %v", err)
+	}
+	restored, err := d.LatestCheckpoint(intentID)
+	if err != nil || restored == nil {
+		t.Fatalf("restored checkpoint = %+v, %v", restored, err)
+	}
+	if restored.AgentName != "worker" || restored.Attempt != 2 || restored.Phase != "exploit" ||
+		len(restored.Done) != 1 || restored.Done[0] != "fingerprint" ||
+		len(restored.Open) != 1 || restored.Open[0] != "bypass" || restored.ToolCalls != 9 {
+		t.Fatalf("restored checkpoint payload mismatch: %+v", restored)
+	}
+	if err := d.CompleteTaskArchiveRestore(archive.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTaskArchiveBlockersIgnoreQueuedDependents(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
@@ -528,5 +698,186 @@ func TestFillArchiveDefaults(t *testing.T) {
 	out, err = fillArchiveDefaults("activity", in)
 	if err != nil || string(out) != string(in) {
 		t.Fatalf("activity changed: %s err=%v", out, err)
+	}
+}
+
+// TestTaskArchiveRestoresSwarmTables proves a months-old task comes back with its
+// swarm state intact: agent events (streamed), discoveries, attack paths and steps,
+// the coverage ledger, and the project knowledge it contributed. Knowledge is
+// merged by identity, never duplicated, and a second restore is a no-op.
+func TestTaskArchiveRestoresSwarmTables(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		SkipPGUnavailable(t, err)
+	}
+	defer d.Close()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	task, err := d.CreateTaskWithOptions("swarm archive "+suffix, "restore swarm state", TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	knowledgeTitle := "swarm archive fact " + suffix
+	defer func() {
+		_, _ = d.Exec(`DELETE FROM knowledge_injections WHERE task_id=$1`, task.ID)
+		_, _ = d.Exec(`DELETE FROM knowledge_items WHERE title=$1`, knowledgeTitle)
+		_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id=$1`, task.ID)
+		_ = d.DeleteTask(task.ID)
+	}()
+	store := d.Exploration(task.ExplorationID)
+	factID, err := store.AddNode(KindFact, map[string]any{"summary": "archived swarm fact"}, 1, "confirmed", "worker", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.AddDiscovery(DiscoveryEvent{TaskID: task.ID, AgentName: "worker#0", Kind: "fact", Summary: "found /admin", NodeID: factID}); err != nil {
+		t.Fatal(err)
+	}
+	const eventCount = 300
+	for i := 0; i < eventCount; i++ {
+		if _, err := d.AddAgentEvent(AgentEvent{TaskID: task.ID, AgentName: "worker#0", Kind: EventPathStep,
+			Detail: json.RawMessage(fmt.Sprintf(`{"step":%d}`, i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pathID int64
+	if err := d.QueryRow(`INSERT INTO attack_paths (task_id,title,rationale,state,score,created_by)
+VALUES ($1,'archive path','chain','validating',7.5,'chain') RETURNING id`, task.ID).Scan(&pathID); err != nil {
+		t.Fatal(err)
+	}
+	for position, kind := range []string{"asset", "finding"} {
+		if _, err := d.Exec(`INSERT INTO attack_path_steps (path_id,position,kind,ref_id,precondition,postcondition)
+VALUES ($1,$2,$3,$4,'login','shell')`, pathID, position, kind, factID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assets := d.Assets()
+	if err := assets.RecordCoverage(task.ID, CoverageEntry{Surface: "/admin", RiskArea: "auth", Outcome: OutcomeNeedsFollowUp, Reason: "not enough evidence", Worker: "worker#0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := assets.RecordCoverage(task.ID, CoverageEntry{Surface: "/login", RiskArea: "sqli", Outcome: OutcomeNoIssueFound, Evidence: "parameterised", Worker: "worker#0"}); err != nil {
+		t.Fatal(err)
+	}
+	itemID, err := d.UpsertKnowledge(t.Context(), KnowledgeItem{
+		Kind: "asset_fact", Title: knowledgeTitle, Body: "restores from the archive", ScopeAssetKey: "swarm.example" + suffix,
+		SourceTaskID: &task.ID,
+		Source:       &KnowledgeSource{Kind: "task", ID: task.ID, ContentHash: KnowledgeContentHash("asset_fact", knowledgeTitle, "restores from the archive")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.LogKnowledgeInjection(itemID, task.ID, nil, "worker#0", "inject"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.SetPaused(task.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := d.QueueTaskArchive(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ClaimTaskArchiveJob(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var events bytes.Buffer
+	snapshot, err := d.SnapshotTaskArchiveWithStreams(task.ID, TaskArchiveStreamWriters{AgentEvents: &events})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.StreamedTables["agent_events"] == "" {
+		t.Fatal("agent_events must stream, not ride in the manifest")
+	}
+	if snapshot.DataCounts["attack_paths"] != 1 || snapshot.DataCounts["coverage_ledger"] != 2 || snapshot.DataCounts["knowledge_items"] < 1 {
+		t.Fatalf("snapshot counts missing swarm tables: %v", snapshot.DataCounts)
+	}
+	if err := d.CompleteTaskArchive(archive.ID, snapshot, "/tmp/swarm-task.tar.zst", "abc", 100, 50); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []struct {
+		name  string
+		query string
+	}{
+		{"agent_events", `SELECT count(*) FROM agent_events WHERE task_id=$1`},
+		{"discovery_events", `SELECT count(*) FROM discovery_events WHERE task_id=$1`},
+		{"attack_paths", `SELECT count(*) FROM attack_paths WHERE task_id=$1`},
+		{"coverage_ledger", `SELECT count(*) FROM coverage_ledger WHERE task_id=$1`},
+		{"knowledge_injections", `SELECT count(*) FROM knowledge_injections WHERE task_id=$1`},
+	} {
+		var live int
+		if err := d.QueryRow(table.query, task.ID).Scan(&live); err != nil {
+			t.Fatal(err)
+		}
+		if live != 0 {
+			t.Fatalf("hot compaction must move %s into the package, found %d live rows", table.name, live)
+		}
+	}
+	if _, err := d.QueueTaskArchiveRestore(archive.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ClaimTaskArchiveJob(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RestoreTaskArchiveWithStreams(archive.ID, snapshot, int64((10 * time.Minute).Seconds()),
+		TaskArchiveStreamReaders{AgentEvents: bytes.NewReader(events.Bytes())}); err != nil {
+		t.Fatalf("restore swarm tables: %v", err)
+	}
+	var restoredEvents, restoredDiscoveries, restoredPaths, restoredSteps, restoredLedger, restoredHistory, restoredInjections int
+	if err := d.QueryRow(`SELECT count(*) FROM agent_events WHERE task_id=$1`, task.ID).Scan(&restoredEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM discovery_events WHERE task_id=$1`, task.ID).Scan(&restoredDiscoveries); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM attack_paths WHERE task_id=$1`, task.ID).Scan(&restoredPaths); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM attack_path_steps step JOIN attack_paths path ON path.id=step.path_id WHERE path.task_id=$1`, task.ID).Scan(&restoredSteps); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM coverage_ledger WHERE task_id=$1`, task.ID).Scan(&restoredLedger); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM coverage_ledger_history WHERE task_id=$1`, task.ID).Scan(&restoredHistory); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM knowledge_injections WHERE task_id=$1`, task.ID).Scan(&restoredInjections); err != nil {
+		t.Fatal(err)
+	}
+	if restoredEvents != eventCount || restoredDiscoveries != 1 || restoredPaths != 1 || restoredSteps != 2 {
+		t.Fatalf("restored swarm rows = events %d discoveries %d paths %d steps %d", restoredEvents, restoredDiscoveries, restoredPaths, restoredSteps)
+	}
+	if restoredLedger != 2 || restoredHistory < 2 || restoredInjections != 1 {
+		t.Fatalf("restored coverage/injections = ledger %d history %d injections %d", restoredLedger, restoredHistory, restoredInjections)
+	}
+	// Knowledge is shared, so the archived item merges back into the surviving row.
+	var mergedItems int
+	var mergedSupport int
+	if err := d.QueryRow(`SELECT count(*),COALESCE(max(support),0) FROM knowledge_items WHERE title=$1`, knowledgeTitle).Scan(&mergedItems, &mergedSupport); err != nil {
+		t.Fatal(err)
+	}
+	if mergedItems != 1 || mergedSupport < 1 {
+		t.Fatalf("knowledge merge produced %d items with support %d", mergedItems, mergedSupport)
+	}
+	var injectionItemID int64
+	if err := d.QueryRow(`SELECT item_id FROM knowledge_injections WHERE task_id=$1`, task.ID).Scan(&injectionItemID); err != nil {
+		t.Fatal(err)
+	}
+	if injectionItemID != itemID {
+		t.Fatalf("injection points at item %d, want the merged live item %d", injectionItemID, itemID)
+	}
+	// A retry before the archive is marked complete (the crash-after-commit case)
+	// must return the recorded warnings instead of restoring the rows twice.
+	if _, err := d.RestoreTaskArchiveWithStreams(archive.ID, snapshot, 0,
+		TaskArchiveStreamReaders{AgentEvents: bytes.NewReader(events.Bytes())}); err != nil {
+		t.Fatalf("idempotent restore: %v", err)
+	}
+	var afterRetry int
+	if err := d.QueryRow(`SELECT count(*) FROM agent_events WHERE task_id=$1`, task.ID).Scan(&afterRetry); err != nil {
+		t.Fatal(err)
+	}
+	if afterRetry != eventCount {
+		t.Fatalf("second restore duplicated events: %d", afterRetry)
+	}
+	if err := d.CompleteTaskArchiveRestore(archive.ID); err != nil {
+		t.Fatal(err)
 	}
 }

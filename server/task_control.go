@@ -303,17 +303,57 @@ func (s *Server) rerunTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "only a completed, failed, or timed-out task can be rerun")
 		return
 	}
+	if err := prepareTaskRerun(t); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	queued, err := s.admitTask(t, "resume")
 	if err != nil {
 		writeErr(w, 409, err.Error())
 		return
 	}
+	// Wake planner after status is already running (or queued-but-running). Doing
+	// this before admit races a terminal round that returns early; after admit,
+	// Resume/Run have live loops and the hint survives a paused FIFO wait.
+	notifyTaskRerun(t)
 	status := "running"
 	if queued {
 		status = "queued"
 	}
 	log.Printf("[task] #%s rerun (%s)", t.ID, status)
 	writeJSON(w, 200, taskControlResult{ID: t.ID, Queued: queued, Status: status})
+}
+
+// prepareTaskRerun reopens settled graph work before admission so a completed
+// task cannot flip running→done on the first planner wake with an empty frontier.
+func prepareTaskRerun(t *Task) error {
+	if t == nil || t.Store == nil {
+		return fmt.Errorf("task store unavailable")
+	}
+	if _, err := t.Store.ReopenMetGoals(); err != nil {
+		return err
+	}
+	openGoal, err := t.Store.HasOpenGoal()
+	if err != nil {
+		return err
+	}
+	if !openGoal {
+		if _, err := t.Store.ReopenTerminalIntents(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// notifyTaskRerun records the operator rerun hint and nudges the planner/workers.
+// Call only after admitTask so the task is no longer terminal.
+func notifyTaskRerun(t *Task) {
+	if t == nil {
+		return
+	}
+	t.NotifyHint("human", []string{
+		"Operator requested a full task rerun. Re-explore open goals with fresh intents; do not prove_goal from prior-run evidence alone — dispatch verification or exploration intents first.",
+	})
 }
 
 // duplicateTask creates a fresh task with the same brief and settings as the

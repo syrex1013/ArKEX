@@ -37,18 +37,24 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
   return (
     <Sidebar {...props} variant={variant} collapsible={collapsible}>
-      <SidebarHeader>
+      <SidebarHeader className="gap-0">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton asChild>
+            <SidebarMenuButton asChild className="h-11 gap-2.5 px-1.5">
               <Link prefetch={false} href="/function/tasks">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/logo.png" alt="ArKex" width={40} height={40} className="shrink-0" />
-                <span className="font-semibold text-base">{APP_CONFIG.name}</span>
+                <img src="/logo.png" alt={APP_CONFIG.name} width={28} height={28} className="size-7 shrink-0" />
+                <span className="flex min-w-0 flex-col justify-center">
+                  <span className="truncate font-semibold text-[0.9375rem] leading-tight tracking-tight">
+                    {APP_CONFIG.name}
+                  </span>
+                  <span className="label-micro truncate text-muted-foreground">Autonomous pentest</span>
+                </span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
+        <div className="mx-1 mt-2 h-px bg-hairline" aria-hidden />
       </SidebarHeader>
       <SidebarContent>
         <EngagementSwitcher />

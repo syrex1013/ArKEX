@@ -812,7 +812,7 @@ CREATE TABLE IF NOT EXISTS agents (
     trigger_max_parallel INTEGER NOT NULL DEFAULT 5,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT agents_role_ck CHECK (role IN ('goals','main','planner','worker','assistant'))
+    CONSTRAINT agents_role_ck CHECK (role IN ('goals','main','planner','worker','assistant','chain'))
 );
 -- Column-add migration (already released; old databases get the columns; new databases already have them in CREATE.
 -- The migration carries no CHECK: existing rows stay safe + backend write whitelist is the fallback).

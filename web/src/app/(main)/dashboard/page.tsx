@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
 
+import { LiveFeed } from "@/components/arkex/live-feed";
+import { PageHeader, StatTile } from "@/components/arkex/primitives";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -248,7 +250,11 @@ export default function DashboardPage() {
       return setVisibleInterval(load, delay);
     }
 
-    const stopRecent = poll(15000, () => api.findingsPage({ page: 1, pageSize: 8, engagement: engagementId }), (page) => setFindings(page.items));
+    const stopRecent = poll(
+      15000,
+      () => api.findingsPage({ page: 1, pageSize: 8, engagement: engagementId }),
+      (page) => setFindings(page.items),
+    );
     const stopCounts = poll(15000, () => api.findingStats(engagementId, true), setFindingCounts);
     const stopUsage = poll(60000, () => api.usageStats(365), setUsageStats);
     return () => {
@@ -526,107 +532,66 @@ export default function DashboardPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 pb-6">
-      {/* ── Header ── */}
-      <div>
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">{t("Overview")}</h1>
-          <p className="text-xs text-muted-foreground">{t("System-wide status · live refresh")}</p>
-        </div>
+      <PageHeader
+        eyebrow={t("Command center")}
+        title={t("Overview")}
+        description={t("Engagement posture pulled from the backend. Every number is measured, never simulated.")}
+        meta={
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.6875rem] text-muted-foreground">
+            <span className="tnum">{t("{count} tasks tracked", { count: tasks.length })}</span>
+            <span className="text-hairline-strong">|</span>
+            <span>{t("Scope {id}", { id: engagementId === "0" ? t("All engagements") : `#${engagementId}` })}</span>
+          </span>
+        }
+      />
+
+      {/* ── Row 1: KPI tiles ── */}
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+        <StatTile
+          label={t("Active tasks")}
+          value={tasksByStatus.running ?? 0}
+          unit={`/ ${tasks.length}`}
+          tone={(tasksByStatus.running ?? 0) > 0 ? "primary" : "neutral"}
+          icon={TargetIcon}
+          hint={
+            tasks.length === 0
+              ? t("No tasks")
+              : [
+                  tasksByStatus.paused ? `${tasksByStatus.paused} ${t("paused")}` : null,
+                  tasksByStatus.done ? `${tasksByStatus.done} ${t("completed")}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || t("No active run")
+          }
+        />
+        <StatTile
+          label={t("Confirmed findings")}
+          value={findingCounts?.total ?? 0}
+          tone={findingsBySev.critical > 0 ? "destructive" : "neutral"}
+          icon={BugIcon}
+          hint={`${findingsBySev.critical} ${t("critical")} · ${findingsBySev.high} ${t("high")}`}
+        />
+        <StatTile label={t("Asset nodes")} value={totalAssets} icon={NetworkIcon} hint={t("Shared across tasks")} />
+        <StatTile
+          label={t("Traffic exchanges")}
+          value={traffic.length}
+          tone={settings?.traffic_capture ? "success" : "neutral"}
+          icon={ActivityIcon}
+          hint={settings?.traffic_capture ? t("Recording") : t("Capture is off")}
+        />
+        <StatTile
+          label={t("Token usage")}
+          value={fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
+          icon={ZapIcon}
+          hint={t("In {input} (incl. cache {cache}) · Out {output}", {
+            input: fmtTokens(displayedTokens.input),
+            cache: fmtTokens(displayedTokens.cacheRead),
+            output: fmtTokens(displayedTokens.output),
+          })}
+        />
       </div>
 
-      {/* ── Row 1: 5 stat cards ── */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {/* Active tasks */}
-        <Card className="gap-1">
-          <CardHeader className="pb-0">
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <TargetIcon className="size-3" /> {t("Active tasks")}
-            </div>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-semibold tabular-nums">{tasksByStatus.running ?? 0}</span>
-              <span className="text-xs text-muted-foreground">/ {tasks.length}</span>
-            </div>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px]">
-            {(tasksByStatus.running ?? 0) > 0 && (
-              <span className="text-blue-400">{t("Exploring {count}", { count: tasksByStatus.running })}</span>
-            )}
-            {(tasksByStatus.paused ?? 0) > 0 && (
-              <span className="text-amber-400">{t("Paused {count}", { count: tasksByStatus.paused })}</span>
-            )}
-            {(tasksByStatus.done ?? 0) > 0 && (
-              <span className="text-emerald-400">{t("Completed {count}", { count: tasksByStatus.done })}</span>
-            )}
-            {tasks.length === 0 && <span className="text-muted-foreground">{t("No tasks")}</span>}
-          </CardContent>
-        </Card>
-
-        {/* Confirmed findings */}
-        <Card className="gap-1">
-          <CardHeader className="pb-0">
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <BugIcon className="size-3" /> {t("Confirmed findings")}
-            </div>
-            <div className="text-2xl font-semibold tabular-nums">{findingCounts?.total ?? 0}</div>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-2.5 text-[10px]">
-            <span className="text-rose-500">{t("Critical {count}", { count: findingsBySev.critical })}</span>
-            <span className="text-red-400">{t("High {count}", { count: findingsBySev.high })}</span>
-            <span className="text-amber-400">{t("Medium {count}", { count: findingsBySev.medium })}</span>
-            <span className="text-slate-400">{t("Low {count}", { count: findingsBySev.low })}</span>
-          </CardContent>
-        </Card>
-
-        {/* Asset nodes */}
-        <Card className="gap-1">
-          <CardHeader className="pb-0">
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <NetworkIcon className="size-3" /> {t("Asset nodes")}
-            </div>
-            <div className="text-2xl font-semibold tabular-nums">{totalAssets}</div>
-          </CardHeader>
-          <CardContent className="text-[10px] text-muted-foreground">{t("Shared across tasks")}</CardContent>
-        </Card>
-
-        {/* Traffic exchanges */}
-        <Card className="gap-1">
-          <CardHeader className="pb-0">
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <ActivityIcon className="size-3" /> {t("Traffic exchanges")}
-            </div>
-            <div className="text-2xl font-semibold tabular-nums">{traffic.length}</div>
-          </CardHeader>
-          <CardContent className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-            {settings?.traffic_capture ? (
-              <>
-                <LiveDot />
-                <span>{t("Recording")}</span>
-              </>
-            ) : (
-              <span>{t("Capture is off")}</span>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* LLM usage */}
-        <Card className="gap-1">
-          <CardHeader className="pb-0">
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <ZapIcon className="size-3" /> {t("Token usage")}
-            </div>
-            <div className="text-2xl font-semibold tabular-nums">
-              {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
-            </div>
-          </CardHeader>
-          <CardContent className="text-[10px] text-muted-foreground">
-            {t("In {input} (incl. cache {cache}) · Out {output}", {
-              input: fmtTokens(displayedTokens.input),
-              cache: fmtTokens(displayedTokens.cacheRead),
-              output: fmtTokens(displayedTokens.output),
-            })}
-          </CardContent>
-        </Card>
-      </div>
+      <LiveFeed height="h-60" title={t("Live backend events")} />
 
       {/* ── Row 2: LLM token usage ── */}
       <Card className="p-4">

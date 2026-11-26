@@ -49,7 +49,8 @@ func (d *DB) SetFindingVerification(findingID int64, status string, poe int, not
 	if n == 0 {
 		return ErrFindingNotFound
 	}
-	return nil
+	_, err = d.RecomputeFindingConfidence(context.Background(), findingID)
+	return err
 }
 
 // SetFindingOASTTag records the OAST payload tag a finding claims as its
@@ -66,7 +67,8 @@ func (d *DB) SetFindingOASTTag(ctx context.Context, findingID int64, tag string)
 	if n == 0 {
 		return ErrFindingNotFound
 	}
-	return nil
+	_, err = d.RecomputeFindingConfidence(ctx, findingID)
+	return err
 }
 
 // FindingOASTTag returns the finding's claimed OAST receipt tag (empty = none).

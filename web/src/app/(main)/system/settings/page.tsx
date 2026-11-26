@@ -22,6 +22,7 @@ import { Switch } from "@/components/ui/switch";
 import { t } from "@/i18n";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
+import { beginEgressAction } from "@/lib/egress-busy";
 import type { Settings } from "@/lib/types";
 import { findWireGuardRelay, parseWireGuardConfig } from "@/lib/wireguard-config";
 
@@ -388,6 +389,7 @@ export default function SystemSettingsPage() {
       return;
     }
     setSavingWG(true);
+    const endEgress = beginEgressAction();
     api
       .setSettings({ global_wg_config: text })
       .then((s) => {
@@ -396,11 +398,15 @@ export default function SystemSettingsPage() {
         toast.success(t("WireGuard config saved · target egress tunnels through it"));
       })
       .catch((e) => toast.error(t("Save failed: {error}", { error: (e as Error).message })))
-      .finally(() => setSavingWG(false));
+      .finally(() => {
+        endEgress();
+        setSavingWG(false);
+      });
   };
 
   const clearWGConfig = () => {
     setSavingWG(true);
+    const endEgress = beginEgressAction();
     api
       .setSettings({ global_wg_config: "" })
       .then((s) => {
@@ -408,7 +414,10 @@ export default function SystemSettingsPage() {
         toast.success(t("WireGuard config cleared · back to the proxy address / direct"));
       })
       .catch((e) => toast.error(t("Save failed: {error}", { error: (e as Error).message })))
-      .finally(() => setSavingWG(false));
+      .finally(() => {
+        endEgress();
+        setSavingWG(false);
+      });
   };
 
   const saveMullvadKey = () => {

@@ -78,6 +78,39 @@ func restoreFindingTrafficTx(tx *sql.Tx, snapshot *TaskArchiveSnapshot) error {
 	return err
 }
 
+// restoreFindingRetests puts the retest history back after its findings. The
+// archived conversation that ran a retest is not part of a task archive, so a
+// dangling reference is released instead of failing the whole restore.
+func restoreFindingRetests(tx *sql.Tx, raw json.RawMessage) error {
+	rows, err := decodeArchiveRows(raw)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	for _, row := range rows {
+		conversationID, ok := jsonInt64(row["conversation_id"])
+		if !ok {
+			row["conversation_id"] = nil
+			continue
+		}
+		var exists bool
+		if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM conversations WHERE id=$1)`, conversationID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			row["conversation_id"] = nil
+		}
+	}
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO finding_retests SELECT * FROM json_populate_recordset(NULL::finding_retests,$1::json)`, string(payload))
+	return err
+}
+
 func normalizeArchivedFindingVersions(raw json.RawMessage) (json.RawMessage, error) {
 	rows, err := decodeArchiveRows(raw)
 	if err != nil {

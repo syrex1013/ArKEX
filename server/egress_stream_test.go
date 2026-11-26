@@ -48,9 +48,11 @@ func TestMullvadEgressStreamPushesOnNotify(t *testing.T) {
 		close(done)
 	}()
 
+	// The first frame carries a live egress probe capped at 6s, so allow for a
+	// slow or unreachable exit rather than assuming a fast network.
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(12 * time.Second):
 		t.Fatal("egress stream did not start")
 	}
 

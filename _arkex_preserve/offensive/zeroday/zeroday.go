@@ -16,9 +16,9 @@ import (
 
 // Pipeline orchestrates the full 0-day research workflow.
 type Pipeline struct {
-	db          *pgxpool.Pool
-	workDir     string
-	dockerSock  string
+	db         *pgxpool.Pool
+	workDir    string
+	dockerSock string
 }
 
 func New(db *pgxpool.Pool, workDir string) *Pipeline {
@@ -186,16 +186,16 @@ type Sink struct {
 }
 
 type PatchFinding struct {
-	FilePath     string
-	LineNo       int
+	FilePath         string
+	LineNo           int
 	IncompleteReason string
 	MissedEndpoints  []string
 }
 
 type FuzzSpec struct {
-	Kind       string // afl++, libfuzzer, jazzer, go-fuzz
-	TargetKind string // binary, function, protocol
-	Target     string
+	Kind        string // afl++, libfuzzer, jazzer, go-fuzz
+	TargetKind  string // binary, function, protocol
+	Target      string
 	HarnessCode string
 	TimeoutMin  int
 }

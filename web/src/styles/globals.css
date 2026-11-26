@@ -1,0 +1,62 @@
+/* --- Console shell refinements -------------------------------------------- */
+@layer components {
+  /* Sidebar: dense operator nav — uppercase micro group labels, hairline active rail. */
+  [data-slot="sidebar-group-label"] {
+    margin-top: 0.5rem;
+    padding-inline: 0.5rem;
+    color: var(--muted-foreground);
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  [data-slot="sidebar-menu-button"] {
+    position: relative;
+    gap: 0.625rem;
+    padding-block: 0.375rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
+    letter-spacing: -0.01em;
+  }
+
+  [data-slot="sidebar-menu-button"] svg {
+    color: var(--muted-foreground);
+    transition: color 120ms ease;
+  }
+
+  [data-slot="sidebar-menu-button"]:hover svg,
+  [data-slot="sidebar-menu-button"][data-active="true"] svg {
+    color: var(--primary);
+  }
+
+  [data-slot="sidebar-menu-button"][data-active="true"]::before {
+    content: "";
+    position: absolute;
+    inset-block: 0.3125rem;
+    inset-inline-start: 0;
+    width: 2px;
+    border-radius: 999px;
+    background: var(--primary);
+  }
+
+  [data-slot="sidebar-menu-sub-button"] {
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+  }
+
+  [data-slot="sidebar-menu-sub-button"][data-active="true"] {
+    color: var(--primary);
+    font-weight: 500;
+  }
+
+  [data-slot="sidebar-menu-sub-button"][data-active="true"] svg {
+    color: var(--primary);
+  }
+
+  /* Header + panel rows: keep hairline separators visually quiet. */
+  [data-slot="separator"] {
+    background-color: var(--hairline);
+  }
+}

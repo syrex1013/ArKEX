@@ -84,8 +84,14 @@ type Task struct {
 	Guard                *guard.Guard           `json:"-"`
 	TargetGuard          *guard.Guard           `json:"-"` // planner and main-agent hooks: target gate only
 	notify               chan struct{}
-	lifecycleMu          sync.RWMutex
-	llmMu                sync.RWMutex
+	// chainNotify wakes the correlation agent (buffered, one pending signal).
+	chainNotify chan struct{}
+	// discoveryMu guards pendingDiscovery: peer discoveries drained before a
+	// live worker's next tool call.
+	discoveryMu      sync.Mutex
+	pendingDiscovery []agent.DiscoveryItem
+	lifecycleMu      sync.RWMutex
+	llmMu            sync.RWMutex
 	// targetGate is the task's opt-in to the approval gate for asset targets.
 	// Atomic: it is switched through the API while tool calls read it.
 	targetGate  atomic.Bool
@@ -352,8 +358,8 @@ const (
 	// is bypassed while the session is healthy (fail closed when it is not).
 	settingGlobalWGConfig = "global_wg_config"
 	settingGlobalWGPort   = "global_wg_proxy_port"
-	settingWorkers     = "workers"
-	settingLLMRecord   = "llm_record"
+	settingWorkers        = "workers"
+	settingLLMRecord      = "llm_record"
 	// LLM failover (round-robin). Off by default — when on, an agent on the "globally
 	// active profile" switches to the next profile automatically when the current one is
 	// unavailable (out of credit/dead key/rate limit/service error).
@@ -1543,6 +1549,17 @@ func (m *Manager) watchWGProxy() {
 		if autoDown {
 			continue
 		}
+		// An unhealthy netstack session still holds the proxy port; stop it
+		// before the restart or every rebind fails with "address already in
+		// use" (kernel mode keeps m.wgSession nil, so this is netstack-only).
+		if sess != nil {
+			_ = sess.Stop()
+			m.mu.Lock()
+			if m.wgSession == sess {
+				m.wgSession = nil
+			}
+			m.mu.Unlock()
+		}
 		if m.MullvadPrivateKey() == "" || m.MullvadAddress() == "" || m.MullvadRelay() == "" {
 			continue
 		}
@@ -1569,6 +1586,17 @@ func (m *Manager) maintainGlobalWG() {
 	m.mu.RUnlock()
 	if gsess != nil && gsess.Healthy() {
 		return
+	}
+	// An unhealthy session still holds the proxy port; stop it before the
+	// restart or every rebind fails with "address already in use" forever
+	// (the same teardown SetGlobalWGConfig does before startGlobalWG).
+	if gsess != nil {
+		_ = gsess.Stop()
+		m.mu.Lock()
+		if m.globalWG == gsess {
+			m.globalWG = nil
+		}
+		m.mu.Unlock()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	err := m.startGlobalWG(ctx)
@@ -1657,7 +1685,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		PlanQuietMode:   pt.PlanQuietMode,
 		CoverageEnabled: pt.CoverageEnabled,
 		FirstRunAt:      unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
-		Store: store, Guard: guard.NewWithInterceptor(ic), TargetGuard: guard.NewTargetOnly(ic), notify: make(chan struct{}, 1),
+		Store: store, Guard: guard.NewWithInterceptor(ic), TargetGuard: guard.NewTargetOnly(ic), notify: make(chan struct{}, 1), chainNotify: make(chan struct{}, 1),
 		interceptor: ic,
 	}
 	t.targetGate.Store(pt.TargetGate)
@@ -2362,6 +2390,11 @@ func (m *Manager) extractLessons(taskID int64) {
 	if _, err := m.pg.ExtractLessonsForTask(context.Background(), taskID); err != nil {
 		log.Printf("[rsi] lesson extraction failed for task %d: %v", taskID, err)
 	}
+	if n, err := m.pg.ExtractKnowledgeForTask(context.Background(), taskID); err != nil {
+		log.Printf("[agent-lifecycle] task=%d agent=planner intent=0 kind=knowledge_extract FAILED: %v", taskID, err)
+	} else if n > 0 {
+		log.Printf("[agent-lifecycle] task=%d agent=planner intent=0 kind=knowledge_extract rows=%d", taskID, n)
+	}
 }
 
 // DeleteTask removes a task and optionally its related global data. Traffic has
@@ -2698,6 +2731,7 @@ func (t *Task) NotifyDone(intentID int64) {
 		t.trigMu.Unlock()
 	}
 	t.Notify()
+	t.NotifyChain()
 }
 
 // NotifyFinding records that a worker reported a finding on intentID (summary),
@@ -2707,6 +2741,48 @@ func (t *Task) NotifyFinding(intentID int64, summary string) {
 	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "finding", IntentID: intentID, Detail: summary})
 	t.trigMu.Unlock()
 	t.Notify()
+	t.NotifyChain()
+}
+
+// NotifyChain wakes the correlation agent without blocking.
+func (t *Task) NotifyChain() {
+	if t.chainNotify == nil {
+		return
+	}
+	select {
+	case t.chainNotify <- struct{}{}:
+	default:
+	}
+}
+
+// QueueDiscovery keeps a peer discovery for the live workers (cap 50, oldest
+// dropped) and wakes the chain agent for findings and paths.
+func (t *Task) QueueDiscovery(item agent.DiscoveryItem) {
+	t.discoveryMu.Lock()
+	t.pendingDiscovery = append(t.pendingDiscovery, item)
+	if len(t.pendingDiscovery) > 50 {
+		t.pendingDiscovery = t.pendingDiscovery[len(t.pendingDiscovery)-50:]
+	}
+	t.discoveryMu.Unlock()
+	if item.Kind == "finding" || item.Kind == "path" {
+		t.NotifyChain()
+	}
+}
+
+// DrainDiscoveries takes the pending peer discoveries (at most 8).
+func (t *Task) DrainDiscoveries() []agent.DiscoveryItem {
+	t.discoveryMu.Lock()
+	defer t.discoveryMu.Unlock()
+	if len(t.pendingDiscovery) == 0 {
+		return nil
+	}
+	n := len(t.pendingDiscovery)
+	if n > 8 {
+		n = 8
+	}
+	out := append([]agent.DiscoveryItem(nil), t.pendingDiscovery[:n]...)
+	t.pendingDiscovery = t.pendingDiscovery[n:]
+	return out
 }
 
 // NotifyOASTHit records that an out-of-band callback correlated to one of the

@@ -1,8 +1,8 @@
 package traffic
 
 import (
-	"github.com/Autumn-27/artex/storage"
 	"fmt"
+	"github.com/Autumn-27/artex/storage"
 	"net/http"
 	"net/url"
 	"os"

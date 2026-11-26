@@ -27,8 +27,6 @@ type MainAgent struct {
 	window          int                                    // context window in tokens (for compaction)
 	windowFn        func() int                             // optional dynamic task-chain minimum
 	maxTurns        int                                    // max agent turns per run (0 = unlimited)
-	proxyAddr       string                                 // recording proxy for WebFetch (empty = direct)
-	proxyCACert     string                                 // recording proxy's CA cert path (HTTPS verify)
 	webSearch       WebSearchOpts                          // web_search tool backend selection (off by default)
 	workDir         string                                 // shared work dir (surfaced in prompt as artifact-output target)
 	steerWork       func(intentID int64, msg string) error // engine callback: steer a running work (nil = off)
@@ -73,9 +71,9 @@ func (m *MainAgent) compactionWindow() int {
 	return m.window
 }
 
-// SetProxy points the main agent's WebFetch at the recording proxy plus the CA
-// cert it trusts to verify HTTPS through it (empty addr = direct).
-func (m *MainAgent) SetProxy(addr, caCert string) { m.proxyAddr, m.proxyCACert = addr, caCert }
+// SetProxy is a no-op: the main agent has no Bash/WebFetch egress. Kept so the
+// manager can wire every agent kind with the same SetProxy call site.
+func (m *MainAgent) SetProxy(addr, caCert string) {}
 
 // SetWebSearch selects the web_search backend for the main agent (off by default).
 func (m *MainAgent) SetWebSearch(o WebSearchOpts) { m.webSearch = o }
@@ -94,7 +92,7 @@ func (m *MainAgent) SetRunTimeout(run time.Duration) { m.runTimeout = run }
 // intermediate-artifact output rules tail is code-owned (artifactSpec), appended after rendering.
 const mainAgentDefaultTmpl = `You are the "main agent" of an authorized penetration-testing system, the interface to the human operator. You do not explore in person, nor do you autonomously generate intents in a loop (that is the planner's job). Your duties:
 
-1. Observe: use graph_overview / list_findings / list_facts / list_assets / get_worker_output to answer the human's questions about current progress.
+1. Observe: use graph_overview / list_findings / list_facts / list_assets / get_worker_output / Read / LS to answer the human's questions about current progress and local artifacts.
 2. Steer (land the human's intent into the system):
    - The human wants to "change direction / emphasize a vulnerability class / focus an area" → write a hint with add_hint (the planner will read it next round).
    - The human wants to "test a specific target right now" → inject one high-priority intent directly with add_intent (priority 8-10). The system automatically pulls a completed task back to running so a worker claims and executes this intent, returning to completed when done.
@@ -103,6 +101,8 @@ const mainAgentDefaultTmpl = `You are the "main agent" of an authorized penetrat
    - The human wants to "add a new final goal to achieve" → add the goal with set_goals. The system writes the goal into the task graph and **automatically pulls the completed/paused task back to running** (the planner will re-judge completion accordingly), no manual resume needed.
    - The human wants to "add/change test constraints (allow/forbid certain operations, e.g. 'only test the current port', 'no brute forcing', 'passive recon only')" → register them with set_constraints (type=allow / type=deny). Constraints are injected into the planner/worker prompts at the next planning round to bound exploration; they can also be managed in the overview's "Constraint management".
 3. Reply concisely in plain language, stating what you did.
+
+**Hard rule — never probe targets yourself.** You have no Bash/WebFetch. Any target scan, HTTP request, exploit, or shell command against the engagement must go through add_intent (or set_goals when it is a new lasting objective) so a worker executes it. Local Read/LS/Write are only for this task's working-directory artifacts.
 
 Current task goal: {{.Goal}}
 
@@ -131,9 +131,10 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	tsx.SetNotifyGoal(notifyGoal) // set_goals adds a goal → record a "human added a goal: …" trigger for the planner
 	tsx.SetNotifyHint(notifyHint) // add_hint adds hints → record a "human added N strategic hints: …" trigger for the planner (origin "human")
 	tsx.steerWork = m.steerWork   // enable steer_work tool (nil = unavailable)
-	// domain tools + basic default toolset (Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash)
-	// when the asset coverage feature is off, drop add_task_scope/list_untested_assets (not in the prompt).
-	base := append(tsx.DropCoverageTools(tsx.MainAgentTools()), defaultTools(m.workDir)...)
+	// Domain tools + local file tools only. Bash/WebFetch stay off so the main
+	// agent cannot probe targets itself and must dispatch workers via add_intent.
+	// Coverage tools drop when the feature is off (not in the prompt either).
+	base := append(tsx.DropCoverageTools(tsx.MainAgentTools()), defaultToolsExcept(m.workDir, "Bash")...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "mainagent", base)
 	defer cleanup()
@@ -145,7 +146,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		Provider:        m.prov,
 		SystemPrompt:    system,
 		DynamicBoundary: boundary,
-		Tools:           withWebFetch(ctx, tools, m.proxyAddr, m.proxyCACert), // WebFetch: routed through the recording proxy for tracing; loads the proxy CA to verify MITM-resigned HTTPS certificates; every redirect hop is gated
+		Tools:           tools, // no WebFetch: target HTTP belongs on workers via add_intent
 		DeferredTools:   def.Deferred,
 		UnlockSet:       def.Unlock,
 		PermissionMode:  permission.ModeBypass,
@@ -161,8 +162,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		DeepSeekSearchAPIKey:  m.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:   m.webSearch.DeepSeekModel,
 		WebSearchProxy:        m.webSearch.Proxy,
-		BashEnv:               proxyEnv(m.proxyAddr, m.proxyCACert), // Bash subcommands go through the proxy + trust the CA by default
-		WorkingDir:            mainDir,                              // the main run directory <workDir>/tasks/<taskID>/main
+		WorkingDir:            mainDir, // the main run directory <workDir>/tasks/<taskID>/main
 		ToolOutputDir:         TaskToolOutputDir(m.workDir, taskID, mainDir),
 		MaxTurns:              m.maxTurns,                             // 0 = unlimited (configurable in agent management)
 		MaxDuration:           m.runTimeout,                           // 0 = unlimited; overridable per task like the worker run budget

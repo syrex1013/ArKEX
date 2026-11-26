@@ -16,7 +16,7 @@
 #
 # Usage examples:
 #   ./reset-password.sh                          # local, auto-reads config.json/env, prompts for the new password
-#   ./reset-password.sh -p 'New-Passphrase!'     # local, new password given directly (at least 12 characters)
+#   ./reset-password.sh -p 'New-Passphrase!'     # local, new password given directly (at least 10 characters)
 #   ./reset-password.sh --dsn postgres://u:p@h:5432/artex
 #   ./reset-password.sh -H 127.0.0.1 -P 5433 -U autopentest -W pass -d artex
 #   ./reset-password.sh -m docker                # docker deployment (reads POSTGRES_* from .env)
@@ -42,6 +42,38 @@ ASSUME_YES=0
 
 die() { echo "error: $*" >&2; exit 1; }
 info() { echo "· $*" >&2; }
+
+# ---- DSN credential handling --------------------------------------------------
+# A connection URI's password must never reach the terminal (printed before the
+# confirmation prompt, a cancelled reset still leaked it) or process arguments
+# (psql argv is visible in ps). The password moves to PGPASSWORD and the DSN is
+# stripped, so display and argv carry no credential.
+
+dsn_password() {
+  local dsn="$1" head userinfo pass=""
+  if [[ "$dsn" == postgresql://* || "$dsn" == postgres://* ]]; then
+    head="${dsn#*://}"; head="${head%%/*}"
+    if [[ "$head" == *@* ]]; then
+      userinfo="${head%%@*}"
+      if [[ "$userinfo" == *:* ]]; then pass="${userinfo#*:}"; fi
+    fi
+    [[ -n "$pass" ]] && pass=$(printf '%b' "${pass//%/\\x}")
+  elif [[ "$dsn" == *password=* ]]; then
+    pass="${dsn#*[pP]assword=}"
+    pass="${pass%%[[:space:]]*}"
+  fi
+  printf '%s' "$pass"
+}
+
+dsn_strip_password() {
+  local dsn="$1"
+  if [[ "$dsn" == postgresql://* || "$dsn" == postgres://* ]]; then
+    dsn=$(printf '%s' "$dsn" | sed -E 's#(://[^:@/]+):[^@]*@#\1@#')
+  elif [[ "$dsn" == *password=* ]]; then
+    dsn=$(printf '%s' "$dsn" | sed -E 's/(^|[[:space:]])[pP]assword=[^[:space:]]*/\1/; s/[[:space:]]+$//')
+  fi
+  printf '%s' "$dsn"
+}
 
 usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
@@ -136,7 +168,7 @@ fi
 # Same minimum as the server (minPasswordRunes in server/auth.go), counted in
 # characters like the server: UTF-8 bytes minus continuation bytes, whatever the locale.
 NEWPASS_CHARS=$(printf '%s' "$NEWPASS" | LC_ALL=C tr -d '\200-\277' | wc -c)
-(( NEWPASS_CHARS >= 12 )) || die "password must be at least 12 characters"
+(( NEWPASS_CHARS >= 10 )) || die "password must be at least 10 characters"
 
 # Hand the password to psql via environment variable (read with \getenv, never in argv/ps)
 export ARTEX_RESET_NEWPASS="$NEWPASS"
@@ -179,6 +211,11 @@ if [[ "$MODE" == "local" ]]; then
 
   declare -a PSQL_ARGS=()
   if [[ -n "$DSN" ]]; then
+    dsn_pass="$(dsn_password "$DSN")"
+    if [[ -n "$dsn_pass" ]]; then
+      export PGPASSWORD="$dsn_pass"
+      DSN="$(dsn_strip_password "$DSN")"
+    fi
     PSQL_ARGS=("$DSN")
     target="$DSN"
   else

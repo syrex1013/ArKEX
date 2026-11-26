@@ -56,6 +56,7 @@ import { OverviewTab } from "./_tabs/overview-tab";
 import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
+import { SwarmTab } from "./_tabs/swarm-tab";
 
 const TABS = [
   { value: "sessions", label: t("Sessions") },
@@ -66,6 +67,7 @@ const TABS = [
   { value: "retests", label: t("Retests") },
   { value: "assets", label: t("Test assets") },
   { value: "credentials", label: t("Credentials") },
+  { value: "swarm", label: t("Swarm") },
   { value: "coverage", label: t("Asset coverage") },
   { value: "intercept", label: t("Interception approval") },
   { value: "report", label: t("Report") },
@@ -551,6 +553,9 @@ function TaskDetailInner() {
         </TabsContent>
         <TabsContent value="credentials" className="mt-0">
           <CredentialsTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="swarm" className="mt-0">
+          <SwarmTab taskId={id} />
         </TabsContent>
         <TabsContent value="coverage" className="mt-0">
           <CoverageGraphTab taskId={id} coverageEnabled={task?.coverage_enabled !== false} />

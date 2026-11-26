@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 )
 
@@ -33,36 +32,33 @@ func rsiLessonsMode() string {
 	}
 }
 
-// wireTaskLessons selects the lessons visible to a task and, in inject mode,
-// attaches the rendered block to the planner and worker. The block is
-// code-owned: it is appended after the rendered prompt and cannot be removed
-// by editing the prompt in the UI. Usage is logged in both modes so a later
-// comparison can tell which tasks saw which lessons.
-func (s *Server) wireTaskLessons(t *Task, wk *agent.Worker, pl *agent.Planner) {
+// lessonsBlockFor selects the lessons visible to a task and renders the block.
+// Returns (block, mode): mode "inject" means the caller should attach the
+// block to the prompts, "shadow" selects and logs only, "" means off. Usage is
+// logged in both modes so a later comparison can tell which tasks saw which
+// lessons.
+func (s *Server) lessonsBlockFor(t *Task) (string, string) {
 	mode := rsiLessonsMode()
 	if mode == "off" || t == nil {
-		return
+		return "", mode
 	}
 	taskID, err := strconv.ParseInt(t.ID, 10, 64)
 	if err != nil {
-		return
+		return "", mode
 	}
 	lessons, err := s.m.PG().TaskLessons(context.Background(), taskID, 8)
 	if err != nil {
 		log.Printf("[rsi] lesson selection failed for task %s: %v", t.ID, err)
-		return
+		return "", mode
 	}
 	block, ids := db.RenderLessons(lessons, 1800)
 	if block == "" {
-		return
-	}
-	if mode == "inject" {
-		wk.SetLessonsBlock(block)
-		pl.SetLessonsBlock(block)
+		return "", mode
 	}
 	if err := s.m.PG().LogLessonUsage(context.Background(), taskID, ids, mode); err != nil {
 		log.Printf("[rsi] lesson usage log failed for task %s: %v", t.ID, err)
 	}
+	return block, mode
 }
 
 // taskLessons returns the lessons visible to one task plus the rendered block.
@@ -110,6 +106,13 @@ func (s *Server) extractTaskLessons(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[rsi] lesson extraction failed for task %d: %v", id, err)
 		writeErr(w, 500, "lesson extraction failed")
 		return
+	}
+	// Project knowledge extraction runs beside the lessons extract (idempotent
+	// upserts, so re-running is safe). A failure never fails the request.
+	if kn, err := s.m.PG().ExtractKnowledgeForTask(r.Context(), id); err != nil {
+		log.Printf("[agent-lifecycle] task=%d agent=planner intent=0 kind=knowledge_extract FAILED: %v", id, err)
+	} else {
+		log.Printf("[agent-lifecycle] task=%d agent=planner intent=0 kind=knowledge_extract rows=%d", id, kn)
 	}
 	writeJSON(w, 200, map[string]any{"extracted": n})
 }

@@ -95,6 +95,20 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 		{`DELETE FROM task_constraints WHERE exploration_id=$1`, []any{expID}},
 		{`DELETE FROM activity WHERE exploration_id=$1`, []any{expID}},
 		{`DELETE FROM exploration_nodes WHERE exploration_id=$1`, []any{expID}},
+		// Long-horizon swarm state moves into the package with the rest of the
+		// task: leaving it live would duplicate every agent event, path and
+		// ledger row when the archive is restored. Project knowledge items are
+		// deliberately kept — they are shared across tasks, and a restore merges
+		// back into the surviving rows.
+		{`DELETE FROM agent_events WHERE task_id=$1`, []any{taskID}},
+		{`DELETE FROM discovery_events WHERE task_id=$1`, []any{taskID}},
+		{`DELETE FROM attack_paths WHERE task_id=$1`, []any{taskID}},
+		{`DELETE FROM chain_cursor WHERE task_id=$1`, []any{taskID}},
+		{`DELETE FROM coverage_ledger WHERE task_id=$1`, []any{taskID}},
+		{`DELETE FROM coverage_ledger_history WHERE task_id=$1`, []any{taskID}},
+		{`DELETE FROM rsi_lesson_usage WHERE task_id=$1`, []any{taskID}},
+		{`DELETE FROM task_intercept_rules WHERE task_id=$1`, []any{taskID}},
+		{`DELETE FROM knowledge_injections WHERE task_id=$1`, []any{taskID}},
 	} {
 		if _, err := tx.Exec(statement.query, statement.args...); err != nil {
 			return err
@@ -141,7 +155,23 @@ WHERE id=$1`, archiveID, ArchiveReady, archivePath, sha256, originalSize, compre
 // idempotent for accounting/traffic retry scenarios and returns non-fatal
 // warnings for global objects that intentionally are not recreated.
 func (d *DB) RestoreTaskArchive(archiveID int64, snapshot *TaskArchiveSnapshot, remainingTimeoutSeconds int64) ([]string, error) {
-	return d.restoreTaskArchive(archiveID, snapshot, remainingTimeoutSeconds, nil)
+	return d.restoreTaskArchive(archiveID, snapshot, remainingTimeoutSeconds, TaskArchiveStreamReaders{})
+}
+
+// validateArchiveStreamedTables refuses streamed metadata this format version
+// cannot have written: a pre-v2 package never streamed, and every listed table must
+// map to the one package path archiveStreamPaths assigns it.
+func validateArchiveStreamedTables(snapshot *TaskArchiveSnapshot) error {
+	for table, path := range snapshot.StreamedTables {
+		allowed, ok := archiveStreamPaths[table]
+		if !ok || path != allowed {
+			return fmt.Errorf("%w: unsupported streamed table metadata", ErrTaskArchiveFormatMismatch)
+		}
+		if snapshot.FormatVersion < 2 {
+			return fmt.Errorf("%w: unsupported streamed table metadata", ErrTaskArchiveFormatMismatch)
+		}
+	}
+	return nil
 }
 
 // RestoreTaskArchiveWithLLMRecords restores a v2 package whose heavyweight LLM
@@ -155,26 +185,55 @@ func (d *DB) RestoreTaskArchiveWithLLMRecords(
 	if llmRecords == nil {
 		return nil, errors.New("nil streamed LLM record reader")
 	}
-	return d.restoreTaskArchive(archiveID, snapshot, remainingTimeoutSeconds, llmRecords)
+	return d.restoreTaskArchive(archiveID, snapshot, remainingTimeoutSeconds, TaskArchiveStreamReaders{LLMRecords: llmRecords})
+}
+
+// RestoreTaskArchiveWithStreams restores every streamed table the manifest lists:
+// llm_records and agent_events each read from their own package file.
+func (d *DB) RestoreTaskArchiveWithStreams(
+	archiveID int64,
+	snapshot *TaskArchiveSnapshot,
+	remainingTimeoutSeconds int64,
+	streams TaskArchiveStreamReaders,
+) ([]string, error) {
+	return d.restoreTaskArchive(archiveID, snapshot, remainingTimeoutSeconds, streams)
+}
+
+// archiveStreamReader returns the reader for a streamed table, or an error when the
+// manifest says the table was streamed but the caller supplied no reader.
+func archiveStreamReader(table string, streams TaskArchiveStreamReaders) (io.Reader, error) {
+	var reader io.Reader
+	switch table {
+	case "llm_records":
+		reader = streams.LLMRecords
+	case "agent_events":
+		reader = streams.AgentEvents
+	}
+	if reader == nil {
+		return nil, fmt.Errorf("%w: streamed %s are missing", ErrTaskArchiveFormatMismatch, table)
+	}
+	return reader, nil
 }
 
 func (d *DB) restoreTaskArchive(
 	archiveID int64,
 	snapshot *TaskArchiveSnapshot,
 	remainingTimeoutSeconds int64,
-	llmRecords io.Reader,
+	streams TaskArchiveStreamReaders,
 ) ([]string, error) {
 	if snapshot == nil || !IsTaskArchiveFormatSupported(snapshot.FormatVersion) {
 		return nil, ErrTaskArchiveFormatMismatch
 	}
-	streamedLLMRecords := snapshot.StreamedTables["llm_records"]
-	if (len(snapshot.StreamedTables) > 0 && snapshot.FormatVersion < 2) ||
-		len(snapshot.StreamedTables) > 1 ||
-		(len(snapshot.StreamedTables) == 1 && streamedLLMRecords != TaskArchiveLLMRecordsPath) {
-		return nil, fmt.Errorf("%w: unsupported streamed table metadata", ErrTaskArchiveFormatMismatch)
+	if err := validateArchiveStreamedTables(snapshot); err != nil {
+		return nil, err
 	}
-	if streamedLLMRecords != "" && llmRecords == nil {
+	streamedLLMRecords := snapshot.StreamedTables["llm_records"]
+	streamedAgentEvents := snapshot.StreamedTables["agent_events"]
+	if streamedLLMRecords != "" && streams.LLMRecords == nil {
 		return nil, fmt.Errorf("%w: streamed LLM records are missing", ErrTaskArchiveFormatMismatch)
+	}
+	if streamedAgentEvents != "" && streams.AgentEvents == nil {
+		return nil, fmt.Errorf("%w: streamed agent events are missing", ErrTaskArchiveFormatMismatch)
 	}
 	tx, err := d.Begin()
 	if err != nil {
@@ -193,6 +252,21 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	}
 	if state != Restoring || taskID != snapshot.TaskID || expID != snapshot.ExplorationID {
 		return nil, fmt.Errorf("%w: restore snapshot identity/state mismatch", ErrTaskArchiveState)
+	}
+	// A retry of an archive whose restore already committed (crash between the
+	// database restore and package consumption) must not re-insert rows that are
+	// live again: the task row is the signal, because restoreTaskStub clears the
+	// archived stub and a rolled-back attempt leaves it in place.
+	var alreadyRestored bool
+	if err := tx.QueryRow(`SELECT deleted_at IS NULL AND archived_at IS NULL FROM tasks WHERE id=$1`, taskID).Scan(&alreadyRestored); err != nil {
+		return nil, err
+	}
+	if alreadyRestored {
+		warnings, err := persistedArchiveWarnings(tx, archiveID)
+		if err != nil {
+			return nil, err
+		}
+		return warnings, tx.Commit()
 	}
 	warnings := []string{}
 	assetMap, assetWarnings, err := restoreArchiveAssets(tx, taskID, snapshot.Tables["assets"])
@@ -242,7 +316,7 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	}
 	// Insert graph rows in foreign-key order. The archived stub has no graph rows,
 	// so an ID conflict signals external corruption and must stop the restore.
-	for _, table := range []string{"exploration_nodes", "exploration_edges", "exploration_anchors", "task_constraints", "activity"} {
+	for _, table := range []string{"exploration_nodes", "exploration_edges", "exploration_anchors", "task_constraints", "activity", "intent_checkpoints"} {
 		if err := insertArchiveRows(tx, table, remappedTables[table]); err != nil {
 			return nil, fmt.Errorf("restore %s: %w", table, err)
 		}
@@ -272,11 +346,14 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 			return nil, fmt.Errorf("restore %s: %w", table, err)
 		}
 	}
+	if err := restoreFindingRetests(tx, remappedTables["finding_retests"]); err != nil {
+		return nil, fmt.Errorf("restore finding_retests: %w", err)
+	}
 	if err := restoreFindingTrafficTx(tx, snapshot); err != nil {
 		return nil, fmt.Errorf("restore finding traffic: %w", err)
 	}
 	if streamedLLMRecords != "" {
-		count, err := insertArchiveJSONSequenceRows(tx, "llm_records", llmRecords)
+		count, err := insertArchiveJSONSequenceRows(tx, "llm_records", streams.LLMRecords)
 		if err != nil {
 			return nil, fmt.Errorf("restore llm_records: %w", err)
 		}
@@ -286,6 +363,24 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	} else if err := insertArchiveRows(tx, "llm_records", remappedTables["llm_records"]); err != nil {
 		return nil, fmt.Errorf("restore llm_records: %w", err)
 	}
+	// Agent events are the swarm's audit trail and can run to six figures for a
+	// long task, so they stream like LLM records instead of riding in one JSON blob.
+	if streamedAgentEvents != "" {
+		count, err := insertArchiveJSONSequenceRows(tx, "agent_events", streams.AgentEvents)
+		if err != nil {
+			return nil, fmt.Errorf("restore agent_events: %w", err)
+		}
+		if expected := snapshot.DataCounts["agent_events"]; count != expected {
+			return nil, fmt.Errorf("restore agent_events: row count %d does not match manifest %d", count, expected)
+		}
+	} else if err := insertArchiveRows(tx, "agent_events", remappedTables["agent_events"]); err != nil {
+		return nil, fmt.Errorf("restore agent_events: %w", err)
+	}
+	swarmWarnings, err := restoreArchiveSwarmState(tx, taskID, snapshot, assetMap)
+	if err != nil {
+		return nil, err
+	}
+	warnings = append(warnings, swarmWarnings...)
 	for _, table := range []string{"llm_usage", "skill_usage", "tool_usage"} {
 		if err := insertArchiveRows(tx, table, remappedTables[table]); err != nil {
 			return nil, fmt.Errorf("restore %s: %w", table, err)
@@ -353,7 +448,9 @@ func decodeArchiveRows(raw json.RawMessage) ([]map[string]any, error) {
 }
 
 func rowExists(tx *sql.Tx, table string, id int64) bool {
-	if table != "task_categories" && table != "llm_profiles" && table != "companies" && table != "tasks" && table != "assets" {
+	switch table {
+	case "task_categories", "llm_profiles", "companies", "tasks", "assets", "engagements", "rsi_lessons":
+	default:
 		return false
 	}
 	var exists bool
@@ -367,7 +464,7 @@ func rowExists(tx *sql.Tx, table string, id int64) bool {
 var archiveDefaults = map[string]map[string]string{
 	"side_question_sessions": {"memory": `{}`},
 	"side_question_requests": {"context_info": `{}`},
-	"findings":               {"report_state": `"none"`},
+	"findings":               {"report_state": `"none"`, "confidence": "0", "fingerprint": `""`},
 }
 
 // fillArchiveDefaults restores the default of a column an older archive
@@ -399,8 +496,12 @@ func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
 	allowed := map[string]bool{
 		"exploration_nodes": true, "exploration_edges": true, "exploration_anchors": true,
 		"task_constraints": true, "activity": true, "task_asset_links": true, "findings": true,
-		"llm_records": true, "llm_usage": true, "skill_usage": true, "tool_usage": true,
+		"finding_retests":    true,
+		"intent_checkpoints": true,
+		"llm_records":        true, "llm_usage": true, "skill_usage": true, "tool_usage": true,
 		"side_question_sessions": true, "side_question_requests": true,
+		"discovery_events": true, "task_intercept_rules": true, "chain_cursor": true,
+		"coverage_ledger": true, "coverage_ledger_history": true, "agent_events": true,
 	}
 	if !allowed[table] {
 		return fmt.Errorf("archive restore table %q is not allowed", table)
@@ -413,10 +514,10 @@ func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
 }
 
 func insertArchiveJSONSequenceRows(tx *sql.Tx, table string, reader io.Reader) (int64, error) {
-	if table != "llm_records" {
+	if table != "llm_records" && table != "agent_events" {
 		return 0, fmt.Errorf("archive streamed restore table %q is not allowed", table)
 	}
-	statement, err := tx.Prepare(`INSERT INTO llm_records SELECT * FROM json_populate_record(NULL::llm_records,$1::json)`)
+	statement, err := tx.Prepare(`INSERT INTO ` + table + ` SELECT * FROM json_populate_record(NULL::` + table + `,$1::json)`)
 	if err != nil {
 		return 0, err
 	}

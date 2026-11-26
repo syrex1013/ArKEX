@@ -100,7 +100,7 @@ export function LayoutControls() {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button size="icon">
+        <Button size="icon" aria-label={t("Appearance and layout")} title={t("Appearance and layout")}>
           <Settings />
         </Button>
       </PopoverTrigger>

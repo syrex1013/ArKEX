@@ -277,6 +277,9 @@ var builtinAgents = []builtinAgent{
 	// full pentest chain alone from recon to wrap-up, planning, executing and
 	// verifying by itself. Interactive shell is on by default.
 	{"pentest", "Penetration Testing", "assistant", "Solo pentest agent: single-handedly walks the full chain from recon → attack surface → deep exploitation → verification → wrap-up, with its own planning, execution, and adversarial verification.", nil, true, intp(0)},
+	// Chain: built-in correlation agent. Not intent-driven: it correlates findings
+	// and assets into scored attack paths and validates each step.
+	{"chain", "Chain Analyst", "chain", "Correlates findings and assets into evidence-backed attack paths and validates each step.", nil, false, nil},
 }
 
 // seedBuiltins inserts the fixed built-in agents and their variable catalog (idempotent).

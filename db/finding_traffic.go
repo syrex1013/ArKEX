@@ -276,7 +276,10 @@ VALUES($1,$2,$3,$4,$5) ON CONFLICT(finding_id,snapshot_id) DO NOTHING`, findingI
 		}
 	}
 	if changed {
-		return bumpEvidenceVersionTx(tx, findingID)
+		if err := bumpEvidenceVersionTx(tx, findingID); err != nil {
+			return err
+		}
+		return RecomputeFindingConfidenceTx(context.Background(), tx, findingID)
 	}
 	return nil
 }
@@ -384,7 +387,34 @@ type RecordFindingInput struct {
 type RecordedFinding struct {
 	FindingID int64           `json:"finding_id,string"`
 	NodeID    int64           `json:"finding_node_id,string"`
+	Merged    bool            `json:"merged,omitempty"`
 	Traffic   *FindingTraffic `json:"traffic"`
+}
+
+// findingDisplayName keeps every finding labelled. The filing tool treats the
+// name as optional, and a blank one leaves the row and the push notification
+// with no title, so derive one from the summary instead of storing "".
+func findingDisplayName(name, vulnClass, summary string) string {
+	if n := strings.TrimSpace(name); n != "" {
+		return n
+	}
+	text := strings.TrimSpace(summary)
+	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	if i := strings.Index(text, ". "); i > 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	if runes := []rune(text); len(runes) > 110 {
+		text = strings.TrimSpace(string(runes[:110])) + "…"
+	}
+	if text != "" {
+		return text
+	}
+	if c := strings.TrimSpace(vulnClass); c != "" {
+		return c
+	}
+	return "Untitled finding"
 }
 
 // ctx is passed in by the caller for this transaction (rather than taking
@@ -392,6 +422,7 @@ type RecordedFinding struct {
 // transaction should likewise be subject to the caller's cancellation and
 // timeout constraints.
 func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, prepared []PreparedTrafficEvidence) (*RecordedFinding, error) {
+	in.Name = findingDisplayName(in.Name, in.VulnClass, in.Summary)
 	if err := LockTaskEvidenceTx(tx, in.TaskID); err != nil {
 		return nil, err
 	}
@@ -414,6 +445,26 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 		}
 	}
 	payload, _ := json.Marshal(map[string]any{"vulnclass": in.VulnClass, "name": in.Name, "severity": in.Severity, "summary": in.Summary, "evidence": map[string]any{"by": in.Worker, "poc": in.Evidence}})
+	fp, err := findingFingerprintTx(tx, in.TaskID, in.VulnClass, in.AssetIDs)
+	if err != nil {
+		return nil, err
+	}
+	if dup, err := resolveDuplicateTx(ctx, tx, in, fp); err != nil {
+		return nil, err
+	} else if dup != nil {
+		out := &RecordedFinding{FindingID: dup.ID, Merged: true}
+		if dup.NodeID != nil {
+			out.NodeID = *dup.NodeID
+		}
+		if err := AddFindingTrafficTx(tx, out.FindingID, prepared); err != nil {
+			return nil, err
+		}
+		if err := RecomputeFindingConfidenceTx(ctx, tx, out.FindingID); err != nil {
+			return nil, err
+		}
+		out.Traffic, err = FindingTrafficTx(tx, out.FindingID)
+		return out, err
+	}
 	out := &RecordedFinding{}
 	if err := tx.QueryRow(`INSERT INTO exploration_nodes(exploration_id,kind,payload,priority,state,origin)
 VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string(payload), in.Worker).Scan(&out.NodeID); err != nil {
@@ -434,8 +485,8 @@ VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string
 		assets = []int64{}
 	}
 	raw, _ := json.Marshal(assets)
-	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids,counterevidence,confidence_rationale)
-VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(raw), in.Counterevidence, in.ConfidenceRationale).Scan(&out.FindingID); err != nil {
+	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids,counterevidence,confidence_rationale,fingerprint)
+VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(raw), in.Counterevidence, in.ConfidenceRationale, fp).Scan(&out.FindingID); err != nil {
 		return nil, err
 	}
 	// Register a push event in the **same transaction**: committing guarantees
@@ -457,7 +508,9 @@ VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, in.TaskID, o
 	if err := AddFindingTrafficTx(tx, out.FindingID, prepared); err != nil {
 		return nil, err
 	}
-	var err error
+	if err := RecomputeFindingConfidenceTx(ctx, tx, out.FindingID); err != nil {
+		return nil, err
+	}
 	out.Traffic, err = FindingTrafficTx(tx, out.FindingID)
 	return out, err
 }

@@ -18,20 +18,20 @@ import (
 
 // Server embeds interactsh and correlates callbacks to intents.
 type Server struct {
-	db          *pgxpool.Pool
-	domain      string
-	callbacks   chan *Callback
-	mu          sync.RWMutex
-	waiters     map[string]chan *Callback // payloadTag -> waiter
+	db        *pgxpool.Pool
+	domain    string
+	callbacks chan *Callback
+	mu        sync.RWMutex
+	waiters   map[string]chan *Callback // payloadTag -> waiter
 }
 
 // Callback represents an incoming OAST interaction.
 type Callback struct {
-	PayloadTag  string
-	Protocol    string // dns, http, smtp, ldap
-	RemoteAddr  string
-	Data        map[string]any
-	ReceivedAt  time.Time
+	PayloadTag string
+	Protocol   string // dns, http, smtp, ldap
+	RemoteAddr string
+	Data       map[string]any
+	ReceivedAt time.Time
 }
 
 func New(db *pgxpool.Pool, domain string) *Server {
@@ -99,8 +99,8 @@ func (s *Server) HandleHTTPCallback(w http.ResponseWriter, r *http.Request) {
 		Protocol:   "http",
 		RemoteAddr: r.RemoteAddr,
 		Data: map[string]any{
-			"method": r.Method,
-			"path":   r.URL.Path,
+			"method":  r.Method,
+			"path":    r.URL.Path,
 			"headers": r.Header,
 		},
 		ReceivedAt: time.Now(),

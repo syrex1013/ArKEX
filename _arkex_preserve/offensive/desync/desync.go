@@ -18,24 +18,24 @@ import (
 type ProbeKind string
 
 const (
-	ProbeCLTE  ProbeKind = "CL.TE"
-	ProbeTECL  ProbeKind = "TE.CL"
-	ProbeH2CL  ProbeKind = "H2.CL"
-	ProbeH2TE  ProbeKind = "H2.TE"
-	ProbeH20   ProbeKind = "H2.0"
-	ProbeH2SP  ProbeKind = "H2.SP" // HTTP/2 single-packet
+	ProbeCLTE ProbeKind = "CL.TE"
+	ProbeTECL ProbeKind = "TE.CL"
+	ProbeH2CL ProbeKind = "H2.CL"
+	ProbeH2TE ProbeKind = "H2.TE"
+	ProbeH20  ProbeKind = "H2.0"
+	ProbeH2SP ProbeKind = "H2.SP" // HTTP/2 single-packet
 )
 
 // ProbeResult holds the outcome of one desync probe.
 type ProbeResult struct {
-	Kind        ProbeKind
-	Target      string
-	Vulnerable  bool
-	Evidence    string
-	StatusFirst int
+	Kind         ProbeKind
+	Target       string
+	Vulnerable   bool
+	Evidence     string
+	StatusFirst  int
 	StatusGadget int
-	Latency     time.Duration
-	Error       string
+	Latency      time.Duration
+	Error        string
 }
 
 // Engine probes HTTP desync / smuggling vulnerabilities.

@@ -361,6 +361,13 @@ func (s *Server) restoreTaskRuntimes() {
 		} else if n > 0 {
 			log.Printf("[engine] task %s reset %d leftover running intents to open", t.ID, n)
 		}
+		// stale swarm agents: working slots from before the restart have no live
+		// heartbeat owner; return them to idle so the roster can re-claim.
+		if taskID, perr := strconv.ParseInt(t.ID, 10, 64); perr == nil {
+			if err := s.m.pg.RetireStaleAgents(taskID); err != nil {
+				log.Printf("[engine] task %s retire stale agents: %v", t.ID, err)
+			}
+		}
 		if n, err := t.Store.FlushActivityOutbox(); err != nil {
 			log.Printf("[activity] task %s outbox: %v", t.ID, err)
 		} else if n > 0 {
@@ -801,6 +808,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/logs/stream", s.streamLogs)
 
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
+	mux.HandleFunc("GET /api/tasks/stream", s.streamTasks)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
 	mux.HandleFunc("GET /api/skill-gaps", s.skillGaps)
 	mux.HandleFunc("GET /api/task-categories", s.pgListTaskCategories)
@@ -811,6 +819,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/engagements", s.createEngagement)
 	mux.HandleFunc("PATCH /api/engagements/{id}", s.updateEngagement)
 	mux.HandleFunc("DELETE /api/engagements/{id}", s.deleteEngagement)
+	mux.HandleFunc("GET /api/engagements/{id}/records", s.listEngagementRecords)
+	mux.HandleFunc("POST /api/engagements/{id}/records", s.createEngagementRecord)
+	mux.HandleFunc("PATCH /api/engagements/records/{rid}", s.updateEngagementRecord)
+	mux.HandleFunc("GET /api/engagements/{id}/timeline", s.engagementTimeline)
+	mux.HandleFunc("POST /api/engagements/{id}/review", s.reviewEngagement)
+	mux.HandleFunc("GET /api/engagements/{id}/brief", s.engagementBrief)
+	mux.HandleFunc("GET /api/engagements/{id}/queue", s.engagementQueue)
 	mux.HandleFunc("POST /api/tasks/category/batch", s.updateTasksCategoryBatch)
 	mux.HandleFunc("GET /api/task-templates", s.pgListTaskTemplates)
 	mux.HandleFunc("POST /api/task-templates", s.pgCreateTaskTemplate)
@@ -837,6 +852,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/credentials", s.listTaskCredentials)
 	mux.HandleFunc("POST /api/tasks/{id}/credentials", s.addTaskCredential)
 	mux.HandleFunc("DELETE /api/tasks/{id}/credentials/{cid}", s.deleteTaskCredential)
+	// long-horizon swarm observability: roster, paths, knowledge, progress, live stream
+	mux.HandleFunc("GET /api/tasks/{id}/swarm", s.taskSwarm)
+	mux.HandleFunc("GET /api/tasks/{id}/swarm/stream", s.streamSwarm)
+	mux.HandleFunc("GET /api/tasks/{id}/paths", s.taskPaths)
+	mux.HandleFunc("GET /api/tasks/{id}/paths/{pathID}", s.taskPathDetail)
+	mux.HandleFunc("POST /api/tasks/{id}/paths/{pathID}/steps/{pos}/validate", s.validatePathStep)
+	mux.HandleFunc("POST /api/tasks/{id}/paths/{pathID}/steps/{pos}/refute", s.refutePathStep)
+	mux.HandleFunc("GET /api/tasks/{id}/knowledge", s.taskKnowledge)
+	mux.HandleFunc("PATCH /api/knowledge/{id}", s.updateKnowledge)
+	mux.HandleFunc("GET /api/tasks/{id}/progress", s.taskProgress)
 	mux.HandleFunc("POST /api/tasks/{id}/archive", s.queueTaskArchive)
 	mux.HandleFunc("POST /api/tasks/archive/batch", s.queueTaskArchivesBatch)
 	mux.HandleFunc("POST /api/task-archives/{id}/restore", s.queueTaskArchiveRestore)
@@ -3500,6 +3525,70 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// streamTasks pushes the live running-task count as SSE for the sidebar badge.
+// The count uses the same resolved status the tasks list shows, is sent
+// immediately on connect, and is re-sent only when it changes.
+func (s *Server) streamTasks(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, 500, "streaming unsupported")
+		return
+	}
+	tok := extractToken(r)
+	if !s.sessionOK(tok) {
+		writeErr(w, 401, "token is invalid or expired")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	count := func() int {
+		n := 0
+		for _, t := range s.m.List() {
+			if s.resolvedTaskStatus(t) == "running" {
+				n++
+			}
+		}
+		return n
+	}
+	send := func(n int) {
+		b, _ := json.Marshal(map[string]int{"running": n})
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}
+
+	last := count()
+	send(last)
+
+	ctx := r.Context()
+	poll := time.NewTicker(2 * time.Second)
+	ping := time.NewTicker(20 * time.Second)
+	defer poll.Stop()
+	defer ping.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-poll.C:
+			if !s.sessionOK(tok) {
+				return
+			}
+			if n := count(); n != last {
+				last = n
+				send(n)
+			}
+		case <-ping.C:
+			if !s.sessionOK(tok) {
+				return
+			}
+			fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
 func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	tok := extractToken(r)
 	if !s.sessionOK(tok) {
@@ -4029,8 +4118,8 @@ func (s *Server) settingsPayload() map[string]any {
 		"global_wg_proxy_port": s.m.GlobalWGPort(),
 		"global_wg_up":         wgUp,
 		"global_wg_endpoint":   wgEndpoint,
-		"mullvad_task_blocked":    s.m.TaskEgressBlocked(),
-		"sliver_config_path":      s.m.SliverConfigPath(),
+		"mullvad_task_blocked": s.m.TaskEgressBlocked(),
+		"sliver_config_path":   s.m.SliverConfigPath(),
 	}
 }
 

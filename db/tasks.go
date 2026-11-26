@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -184,9 +185,34 @@ type TaskCreateOptions struct {
 	TargetGate *bool
 }
 
+// taskDisplayName keeps every task labelled. Task creation treats the name as
+// optional (the UI dialog allows leaving it blank), and a blank one leaves the
+// row and the task list with no title, so derive one from the description
+// instead of storing "".
+func taskDisplayName(name, description string) string {
+	if n := strings.TrimSpace(name); n != "" {
+		return n
+	}
+	text := strings.TrimSpace(description)
+	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	if i := strings.Index(text, ". "); i > 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	if runes := []rune(text); len(runes) > 110 {
+		text = strings.TrimSpace(string(runes[:110])) + "…"
+	}
+	if text != "" {
+		return text
+	}
+	return "Untitled task"
+}
+
 // CreateTaskWithOptions creates an exploration, task, direct source relations,
 // and the ordered task LLM chain in one transaction.
 func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOptions) (*Task, error) {
+	opts.Name = taskDisplayName(opts.Name, description)
 	if len(opts.SourceTaskIDs) > MaxTaskSourceCount {
 		return nil, fmt.Errorf("too many source tasks: got %d, maximum is %d", len(opts.SourceTaskIDs), MaxTaskSourceCount)
 	}

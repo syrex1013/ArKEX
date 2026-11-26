@@ -55,7 +55,7 @@ func TestPauseShiftsTaskDeadlineOnResume(t *testing.T) {
 	time.Sleep(paused)
 
 	// Admission out of the paused state (a paused task keeps its lifecycle status).
-	if err := m.ApplyTaskAdmission(task.ID, "running", "running", false, "resume", false); err != nil {
+	if err := m.ApplyTaskAdmission(task.ID, "paused", "running", false, "resume", false); err != nil {
 		t.Fatal(err)
 	}
 

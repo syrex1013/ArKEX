@@ -1,11 +1,12 @@
 import type { MullvadEgress } from "./types";
 
 type Route = "mullvad" | "wg" | "proxy" | "direct";
-type State = "checking" | "working" | "failed" | "off" | "unverified" | "unavailable";
+type State = "checking" | "pinging" | "working" | "failed" | "off" | "unverified" | "unavailable";
 
 export function egressStatus(
   egress: MullvadEgress | undefined,
   unreachable = false,
+  busy = false,
 ): { route: Route; state: State; ip?: string } {
   // Mullvad wins while its tunnel is up (EffectiveTaskProxyURL order); a stored
   // global wg config owns the indicator otherwise, then Mullvad fail-closed, then
@@ -15,6 +16,7 @@ export function egressStatus(
   else if (egress?.global_wg_set) route = "wg";
   else if (egress?.task_egress_blocked) route = "mullvad";
   else if (egress?.global_proxy_set) route = "proxy";
+  if (busy) return { route, state: "pinging" };
   if (unreachable) return { route, state: "unavailable" };
   if (!egress) return { route, state: "checking" };
   if (route === "proxy") return { route, state: "unverified" };

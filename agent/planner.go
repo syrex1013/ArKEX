@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -44,6 +45,11 @@ type Planner struct {
 	// with a per-run data envelope (field=lessons) and appends it after the
 	// rendered system prompt. The server renders the text from outcome records.
 	lessonsBlock string
+
+	// knowledgeModeFn resolves the knowledge_inject_mode setting per round
+	// (off|shadow|inject) so a settings change applies without rebuilding the
+	// agent. nil = inject (default).
+	knowledgeModeFn func() string
 
 	// todos keeps ONE plan-scratchpad per task (keyed by exploration id) so the
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
@@ -109,6 +115,59 @@ func (p *Planner) SetConstraintInject(fn func() bool) { p.injectConstraints = fn
 // frames it as data. The server renders it from outcome records; it is never
 // editable through the prompt UI.
 func (p *Planner) SetLessonsBlock(block string) { p.lessonsBlock = block }
+
+// SetKnowledgeInjectMode wires the per-round resolver for the knowledge_inject_mode
+// setting (off|shadow|inject). nil = inject (default). The engine calls it once per
+// round so a settings toggle takes effect without rebuilding the planner.
+func (p *Planner) SetKnowledgeInjectMode(fn func() string) { p.knowledgeModeFn = fn }
+
+// knowledgeMode reports the resolved injection mode, defaulting to inject.
+func (p *Planner) knowledgeMode() string {
+	mode := "inject"
+	if p.knowledgeModeFn != nil {
+		mode = strings.ToLower(strings.TrimSpace(p.knowledgeModeFn()))
+	}
+	switch mode {
+	case "off", "shadow":
+		return mode
+	default:
+		return "inject"
+	}
+}
+
+// knowledgeRoundBlock renders the project-knowledge block for this planner round.
+// Both inject and shadow record one knowledge_inject event carrying the rendered
+// ids (so a later shadow/inject comparison sees the same selection); only inject
+// appends the block to the round input. Empty when nothing matches or mode=off.
+func (p *Planner) knowledgeRoundBlock(taskID int64, ts *db.ExplorationStore, tsx *ToolSet, goal string, triggers []TriggerEvent, env dataEnvelope) string {
+	mode := p.knowledgeMode()
+	if mode == "off" {
+		return ""
+	}
+	// The query ranks candidates: the task goal plus what changed this round.
+	query := goal
+	for _, tr := range triggers {
+		if tr.Detail != "" {
+			query += "\n" + tr.Detail
+		}
+	}
+	block, ids := tsx.KnowledgeCandidates(query, 12)
+	if block == "" {
+		return ""
+	}
+	if d := ts.DB(); d != nil {
+		raw, _ := json.Marshal(map[string]any{"ids": ids, "mode": mode})
+		if _, err := d.AddAgentEvent(db.AgentEvent{TaskID: taskID, AgentName: "planner", Kind: db.EventKnowledgeInject, Detail: raw}); err != nil {
+			log.Printf("[agent-lifecycle] task=%d agent=planner intent=0 kind=knowledge_inject FAILED: %v", taskID, err)
+		}
+		logKnowledgeInjections(d, taskID, 0, "planner", mode, ids)
+	}
+	if mode == "shadow" {
+		return ""
+	}
+	// The block is derived from target/project content, so it is framed as data.
+	return "\n\n" + env.wrap("knowledge", block)
+}
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (p *Planner) wantConstraints() bool { return p.injectConstraints == nil || p.injectConstraints() }
@@ -455,6 +514,8 @@ Task goal: {{.Goal}}
    - **asset_ids**: the target asset ids this direction tests/attacks (pass whenever possible; 0/1/many, from list_assets) — whenever the direction revolves around concrete assets (site/interface/parameter/host) be sure to pass them; used for coverage dedup and linking into the asset lineage; pass all for multi-asset directions; leave empty only for pure global recon with no concrete target assets.
    - **parent_ids**: which upstream nodes this direction is synthesized from (optional, 0/1/many) — when multiple facts combine into one intent pass them all; when derived from an upstream intent/finding pass its id; leave empty for a top-level brand-new direction.
 
+6. **Attack paths outrank generic work**: when the graph_overview carries an "attack_paths" section, prefer promoting the next "proposed" step of the highest-scored path — add one intent that drives/validates that step (name the path id in the summary, and what the step's precondition enables) instead of opening unrelated breadth. Set "add_intent"'s optional "role" on every intent to match the direction (one of recon / web / api / exploit / verify / general; exploit for enabling/pivot steps, verify for requires steps; omit only for pure global recon).
+
 No duplicates, no padding; but when the goal is unmet and there are uncovered, deeper plays, dispatch them. Concise, focused, efficient.`
 
 func plannerSystem(goal, dataDir, workDir string) string {
@@ -525,6 +586,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// wrap-up round. Its agent-reported gap lines are framed with this message's env.
 	budgetRound, _ := ctx.Value(budgetRoundKey{}).(BudgetRound)
 	situational += tsx.coverageLedgerBlock(tc.Final || budgetRound.WrapUp, env)
+	// Project knowledge (asset facts, failed hypotheses, chains): ranked for this
+	// round's goal + triggers, framed as data. Shadow mode records only.
+	situational += p.knowledgeRoundBlock(taskID, ts, tsx, goal, triggers, env)
 	// The main run directory <workDir>/tasks/<taskID>/main; create it first.
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})

@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { beginEgressAction } from "@/lib/egress-busy";
 
 export default function MullvadPage() {
   const [servers, setServers] = useState<
@@ -24,6 +25,7 @@ export default function MullvadPage() {
 
   async function load(ping: boolean) {
     setBusy(true);
+    const endEgress = ping ? beginEgressAction() : null;
     try {
       const [list, st] = await Promise.all([api.mullvadServers(ping), api.mullvadStatus()]);
       setServers(list.servers ?? []);
@@ -31,6 +33,7 @@ export default function MullvadPage() {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Mullvad list failed");
     } finally {
+      endEgress?.();
       setBusy(false);
     }
   }
@@ -38,6 +41,7 @@ export default function MullvadPage() {
   async function up() {
     if (!sel) return;
     setBusy(true);
+    const endEgress = beginEgressAction();
     try {
       const r = await api.mullvadUp(sel);
       setNote(r.note ?? (r.ok ? `Interface up: ${r.conf_path}` : ""));
@@ -47,12 +51,14 @@ export default function MullvadPage() {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "bring-up failed");
     } finally {
+      endEgress();
       setBusy(false);
     }
   }
 
   async function down() {
     setBusy(true);
+    const endEgress = beginEgressAction();
     try {
       await api.mullvadDown();
       const st = await api.mullvadStatus();
@@ -61,6 +67,7 @@ export default function MullvadPage() {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "teardown failed");
     } finally {
+      endEgress();
       setBusy(false);
     }
   }

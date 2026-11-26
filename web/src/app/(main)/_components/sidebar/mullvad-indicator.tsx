@@ -6,6 +6,7 @@ import { Globe } from "lucide-react";
 
 import { t } from "@/i18n";
 import { api, sseUrl } from "@/lib/api";
+import { isEgressBusy, subscribeEgressBusy } from "@/lib/egress-busy";
 import { egressStatus } from "@/lib/egress-status";
 import type { MullvadEgress } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -13,6 +14,7 @@ import { cn } from "@/lib/utils";
 export function MullvadIndicator() {
   const [egress, setEgress] = React.useState<MullvadEgress>();
   const [unreachable, setUnreachable] = React.useState(false);
+  const busy = React.useSyncExternalStore(subscribeEgressBusy, isEgressBusy);
 
   React.useEffect(() => {
     let alive = true;
@@ -44,13 +46,14 @@ export function MullvadIndicator() {
     };
   }, []);
 
-  const { route, state, ip } = egressStatus(egress, unreachable);
+  const { route, state, ip } = egressStatus(egress, unreachable, busy);
   let routeLabel = t("Egress");
   if (route === "mullvad") routeLabel = t("Mullvad");
   else if (route === "wg") routeLabel = t("WireGuard");
   else if (route === "proxy") routeLabel = t("Proxy");
   const stateLabel = {
     checking: t("Checking…"),
+    pinging: t("Pinging…"),
     working: t("Working"),
     failed: t("Not working"),
     off: t("Off"),
@@ -72,7 +75,8 @@ export function MullvadIndicator() {
           "size-3.5 shrink-0",
           state === "working" && "text-emerald-600 dark:text-emerald-400",
           state === "failed" && "text-destructive",
-          state === "unverified" && "text-amber-600 dark:text-amber-400",
+          (state === "unverified" || state === "pinging") && "text-amber-600 dark:text-amber-400",
+          state === "pinging" && "animate-pulse",
         )}
         aria-hidden
       />

@@ -2,12 +2,9 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-/* Theme preset styles: these override CSS variables based on the selected data-theme-preset */
-@import "../styles/presets/brutalist.css";
-@import "../styles/presets/soft-pop.css";
-@import "../styles/presets/tangerine.css";
-@import "../styles/presets/silent-sentinel.css";
+/* Selectable visual styles. Each preset defines both light and dark token sets. */
 @import "../styles/presets/threatvector.css";
+@import "../styles/presets/dracula.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -42,6 +39,17 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -93,6 +101,19 @@ These serve as the fallback; there is no separate default.css file. */
   --font-mono: var(--font-geist-mono);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
+
+  /* semantic layer fallbacks (presets override these) */
+  --surface-1: oklch(1 0 0);
+  --surface-2: oklch(0.985 0 0);
+  --surface-3: oklch(0.97 0 0);
+  --hairline: oklch(0.922 0 0);
+  --hairline-strong: oklch(0.87 0 0);
+  --success: oklch(0.55 0.15 155);
+  --success-foreground: oklch(0.99 0 0);
+  --warning: oklch(0.7 0.16 70);
+  --warning-foreground: oklch(0.2 0 0);
+  --info: oklch(0.56 0.18 255);
+  --info-foreground: oklch(0.99 0 0);
 }
 
 .dark {
@@ -127,6 +148,18 @@ These serve as the fallback; there is no separate default.css file. */
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  --surface-1: oklch(0.205 0 0);
+  --surface-2: oklch(0.23 0 0);
+  --surface-3: oklch(0.26 0 0);
+  --hairline: oklch(1 0 0 / 12%);
+  --hairline-strong: oklch(1 0 0 / 22%);
+  --success: oklch(0.72 0.16 155);
+  --success-foreground: oklch(0.18 0 0);
+  --warning: oklch(0.8 0.15 80);
+  --warning-foreground: oklch(0.18 0 0);
+  --info: oklch(0.7 0.14 250);
+  --info-foreground: oklch(0.18 0 0);
 }
 
 @layer base {
@@ -137,9 +170,106 @@ These serve as the fallback; there is no separate default.css file. */
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-sans), system-ui, sans-serif;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
   html {
     @apply font-sans;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 88%, transparent);
+    color: var(--primary-foreground);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--hairline-strong) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--hairline-strong);
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--muted-foreground);
+  }
+
+  [data-slot="card"] {
+    border-color: var(--hairline);
+  }
+}
+
+@layer utilities {
+  /* Instrument-style micro label used for section eyebrows and table heads. */
+  .label-micro {
+    font-size: 0.625rem;
+    line-height: 1;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .panel {
+    background: var(--surface-1);
+    border: 1px solid var(--hairline);
+  }
+
+  /* Faint structural grid, used behind empty/diagram areas. */
+  .grid-field {
+    background-image:
+      linear-gradient(to right, var(--hairline) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--hairline) 1px, transparent 1px);
+    background-size: 32px 32px;
+    mask-image: radial-gradient(ellipse at center, black 0%, transparent 78%);
+  }
+
+  .glow-primary {
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--primary) 35%, transparent),
+      0 0 28px -10px color-mix(in oklab, var(--primary) 60%, transparent);
+  }
+
+  .scroll-fade-b {
+    mask-image: linear-gradient(to bottom, black calc(100% - 28px), transparent);
+  }
+}
+
+@keyframes artex-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+}
+
+@keyframes artex-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .artex-pulse,
+  [data-live-dot] {
+    animation: none !important;
   }
 }
 

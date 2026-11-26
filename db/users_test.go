@@ -10,10 +10,13 @@ func TestAuthUsersCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
+	// The package DB outlives one run: clear a leftover row from a previous run.
+	_, _ = d.Exec(`DELETE FROM auth_users WHERE username='alice'`)
 	u, err := d.CreateAuthUser("alice", "hash-alice", "operator")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM auth_users WHERE id=$1`, u.ID) })
 	if u.Username != "alice" || u.Role != "operator" || u.PwdVersion != 1 {
 		t.Fatalf("unexpected user %+v", u)
 	}

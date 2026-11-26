@@ -106,4 +106,3 @@ func (c *CAS) Stats(ctx context.Context) (count int64, originalBytes int64, comp
 		FROM blobs`).Scan(&count, &originalBytes, &compressedBytes)
 	return
 }
-

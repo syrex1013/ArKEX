@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -97,6 +98,10 @@ type Engine struct {
 	debounce time.Duration
 
 	bc *Broadcaster // live activity pub/sub (SSE)
+
+	// resolveChain resolves the chain agent for a task (set by the server wiring;
+	// nil = chain agent off for this engine).
+	resolveChain func(*Task) *agent.Chain
 
 	started  sync.Map // taskID -> bool, so Run is idempotent per task
 	lastAct  sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
@@ -587,6 +592,9 @@ func (e *Engine) drainSteer(intentID int64) (string, bool) {
 type steerHooks struct {
 	inner harness.HookRunner
 	drain func() (string, bool)
+	// discoveries drains pending peer discoveries of the task; they are injected
+	// ahead of steering.
+	discoveries func() string
 	// nudges counts the idle-turn reruns already injected for this intent, capped by
 	// limit. It is a pointer: the harness holds a copy of steerHooks, and the count must be shared.
 	nudges *atomic.Int64
@@ -635,6 +643,11 @@ func isThinkingOnlyTurn(messages []llm.Message) bool {
 }
 
 func (h steerHooks) PreToolUse(ctx context.Context, name string, input []byte) (bool, string, []byte) {
+	if h.discoveries != nil {
+		if block := h.discoveries(); block != "" {
+			return true, block + "\n(These are peer-discovery updates injected before your next step: the tool call was not executed and no tool failed. Re-issue the same call if you still need it, then carry on.)", nil
+		}
+	}
 	if msg, ok := h.drain(); ok {
 		return true, "[Planner real-time steering] " + msg +
 			"\n(This is the planner's immediate instruction for this intent; the tool call was not executed — adjust your next step accordingly. If it conflicts with your current plan, this takes precedence.)", nil
@@ -848,7 +861,40 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		t.Notify() // already running — just nudge a planning round
 		return
 	}
-	rt := e.registerTaskRoutines(ctx, t.ID, 2+workers)
+	// The roster is durable: a restarted task reuses the same agents and roles. A
+	// failed roster write falls back to the old generated work#N names.
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	roles := db.AgentRoleMix(workers, e.m.ChainAgentEnabled())
+	roster, err := e.m.pg.EnsureTaskAgents(taskID, roles)
+	if err != nil {
+		log.Printf("[agent-lifecycle] task=%s roster ensure FAILED: %v", t.ID, err)
+		roster = nil
+	} else {
+		e.agentEvent(t, db.AgentEvent{TaskID: taskID, Kind: db.EventAgentSeeded,
+			Detail: json.RawMessage(fmt.Sprintf(`{"agents":%d}`, len(roster)))})
+	}
+	pool := make([]*db.TaskAgent, 0, len(roster))
+	for _, ag := range roster {
+		if ag.Role != db.AgentRoleChain {
+			pool = append(pool, ag)
+		}
+	}
+	if len(pool) == 0 {
+		for i := 0; i < workers; i++ {
+			pool = append(pool, &db.TaskAgent{Name: fmt.Sprintf("work#%d", i+1), Role: db.AgentRoleGeneral})
+		}
+	}
+	chainOn := false
+	for _, ag := range roster {
+		if ag.Role == db.AgentRoleChain {
+			chainOn = true
+		}
+	}
+	extra := 0
+	if chainOn {
+		extra = 1
+	}
+	rt := e.registerTaskRoutines(ctx, t.ID, 2+len(pool)+extra)
 	e.deleteMu.RUnlock()
 	if rt == nil {
 		e.started.Delete(t.ID)
@@ -857,9 +903,11 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 	e.touch(t.ID)
 	runTaskRoutine(rt, func(loopCtx context.Context) { e.plannerLoop(loopCtx, t) })
 	runTaskRoutine(rt, func(loopCtx context.Context) { e.claimSweepLoop(loopCtx, t) })
-	for i := 0; i < workers; i++ {
-		name := fmt.Sprintf("work#%d", i+1)
-		runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, name) })
+	for _, ag := range pool {
+		runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, ag) })
+	}
+	if chainOn {
+		runTaskRoutine(rt, func(loopCtx context.Context) { e.chainLoop(loopCtx, t) })
 	}
 	e.startDeadlineCoordinator(ctx, t) // task-level timeout timer (only when timeout>0; deduplicated)
 	// Kick the first planning round only when there are no active intents at all
@@ -1141,7 +1189,9 @@ func startClaimHeartbeat(store *db.ExplorationStore, interval time.Duration, lab
 	return func() { close(quit); <-done }
 }
 
-func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
+func (e *Engine) workerLoop(ctx context.Context, t *Task, ag *db.TaskAgent) {
+	name := ag.Name
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1185,24 +1235,87 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 		if !e.beginTaskOperation(t.ID) {
 			return
 		}
-		claimed := e.runWorkerStep(ctx, t, name, worker)
-		e.decInflight(t.ID)
-		if !claimed && sleepCtx(ctx, 800*time.Millisecond) {
-			return
+		if _, ok, err := e.m.pg.ClaimAgentByID(ag.ID); err != nil || !ok {
+			e.decInflight(t.ID)
+			if err != nil {
+				log.Printf("[agent-lifecycle] task=%s agent=%s kind=claim FAILED: %v", t.ID, name, err)
+			}
+			if sleepCtx(ctx, 600*time.Millisecond) {
+				return
+			}
+			continue
 		}
+		before, _ := e.m.pg.CountTaskFindings(taskID)
+		if !e.runWorkerStep(ctx, t, name, ag.Role, worker, ag.ID) {
+			// Empty poll: nothing was claimed, so the slot returns to idle
+			// without an intents_done tick and without claim/release events.
+			if err := e.m.pg.ReleaseAgent(ag.ID, db.AgentStateIdle); err != nil {
+				log.Printf("[agent-lifecycle] task=%s agent=%s kind=idle FAILED: %v", t.ID, name, err)
+			}
+			e.decInflight(t.ID)
+			if sleepCtx(ctx, 800*time.Millisecond) {
+				return
+			}
+			continue
+		}
+		after, _ := e.m.pg.CountTaskFindings(taskID)
+		if err := e.m.pg.FinishAgent(ag.ID, after > before); err != nil {
+			log.Printf("[agent-lifecycle] task=%s agent=%s kind=release FAILED: %v", t.ID, name, err)
+		} else {
+			e.agentEvent(t, db.AgentEvent{TaskID: taskID, AgentName: name, Kind: db.EventAgentRelease})
+		}
+		e.decInflight(t.ID)
+	}
+}
+
+// agentEvent persists one lifecycle event and pushes it to the task's swarm
+// stream. Failures are logged only.
+func (e *Engine) agentEvent(t *Task, ev db.AgentEvent) {
+	id, err := e.m.pg.AddAgentEvent(ev)
+	if err != nil {
+		log.Printf("[agent-lifecycle] task=%s agent=%s kind=%s FAILED: %v", t.ID, ev.AgentName, ev.Kind, err)
+		return
+	}
+	e.bc.PublishSystem(db.SystemEvent{ID: id, Kind: ev.Kind, Data: ev.Detail, Task: ev.TaskID, Agent: ev.AgentName})
+}
+
+// discoverySink persists a run's discovery, queues it for live peers and wakes the
+// chain agent. Failures are logged only: a lost discovery never fails the run.
+func (e *Engine) discoverySink(t *Task) func(agent.DiscoveryItem) {
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	return func(it agent.DiscoveryItem) {
+		id, err := e.m.pg.AddDiscovery(db.DiscoveryEvent{
+			TaskID: taskID, IntentID: it.IntentID, AgentName: it.Agent, Kind: it.Kind, Summary: it.Summary, NodeID: it.NodeID,
+		})
+		if err != nil {
+			log.Printf("[agent-lifecycle] task=%s agent=%s kind=discovery FAILED: %v", t.ID, it.Agent, err)
+		} else {
+			detail, _ := json.Marshal(map[string]any{"kind": it.Kind, "summary": it.Summary, "node_id": it.NodeID})
+			e.bc.PublishSystem(db.SystemEvent{ID: id, Kind: "discovery", Data: detail, Task: taskID, Agent: it.Agent})
+		}
+		t.QueueDiscovery(it)
+		log.Printf("[agent-lifecycle] task=%s agent=%s intent=%d kind=discovery node=%d", t.ID, it.Agent, it.IntentID, it.NodeID)
 	}
 }
 
 // runWorkerStep claims one intent from the frontier and fully settles it via
-// runIntent. Returns false when nothing was claimable. The pool worker loop is its
-// only caller.
-func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker *agent.Worker) bool {
-	intent, token := e.claimNext(t, name)
+// runIntent, linking the claimed intent into the agent roster (current_intent_id)
+// and emitting the claim event only when a real intent was claimed. Returns false
+// when nothing was claimable — the caller must then return the slot to idle
+// without counting work or events. The pool worker loop is its only caller.
+func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name, role string, worker *agent.Worker, agentID int64) bool {
+	intent, token := e.claimNext(t, name, role)
 	if intent == nil {
 		return false
 	}
+	if err := e.m.pg.SetAgentIntent(agentID, intent.ID); err != nil {
+		log.Printf("[worker %s] task %s roster link intent #%d failed: %v", name, t.ID, intent.ID, err)
+	}
 	log.Printf("[worker %s] task %s claimed intent #%d", name, t.ID, intent.ID)
-	return e.runIntent(ctx, t, name, worker, intent, token, "", "")
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	e.agentEvent(t, db.AgentEvent{TaskID: taskID, AgentName: name, Kind: db.EventAgentClaim})
+	e.runIntent(ctx, t, name, worker, intent, token, "", "")
+	return true
 }
 
 // intentWorkContext resolves the cached per-task exec context and returns a
@@ -1268,14 +1381,31 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// nudges deliberately sits outside the model_error rerun loop: the idle-turn rerun
 	// cap is a per-intent total, and one rerun round must not reset it back to zero.
 	hooks := steerHooks{
-		inner:  t.Guard.Hooks(),
-		drain:  func() (string, bool) { return e.drainSteer(iid) },
+		inner: t.Guard.Hooks(),
+		drain: func() (string, bool) { return e.drainSteer(iid) },
+		discoveries: func() string {
+			return agent.RenderDiscoveries(t.DrainDiscoveries())
+		},
 		nudges: &atomic.Int64{},
 		limit:  e.emptyTurnNudgeLimit(),
 		label:  label,
 		budget: meter,
 	}
 	wTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	worker.SetDiscovery(e.discoverySink(t))
+	// Resume: a re-run of this intent continues its latest checkpoint instead of
+	// starting over, and the attempt counter bounds how often that may happen.
+	attempt, maxResumes := 1, e.intentMaxResumes()
+	if n, cErr := t.Store.DB().CountCheckpointAttempts(intent.ID); cErr == nil {
+		attempt = n + 1
+	}
+	if last, lErr := t.Store.DB().LatestCheckpoint(intent.ID); lErr == nil && last != nil {
+		worker.SetResume(agent.ResumeState{Attempt: attempt, Max: maxResumes, Last: last})
+		e.agentEvent(t, db.AgentEvent{TaskID: wTaskID, AgentName: name, IntentID: intent.ID, Kind: db.EventResume,
+			Detail: json.RawMessage(fmt.Sprintf(`{"attempt":%d,"max":%d}`, attempt, maxResumes))})
+	} else {
+		worker.SetResume(agent.ResumeState{Attempt: 1, Max: maxResumes})
+	}
 	e.BeginLLMCall(t.ID)
 	var reason harness.TerminalReason
 	var wrote agent.WriteCounts
@@ -1362,7 +1492,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// intent over. This run's result is void and the intent state is not ours to
 	// write (the fence would reject every write below).
 	if errors.Is(workCause, agent.AbortWorkClaimLost) {
-		log.Printf("[worker %s] task %s intent #%d claim lost to another worker, result discarded", name, t.ID, intent.ID)
+		log.Printf("[agent-lifecycle] task=%s agent=%s intent=%d kind=claim_lost FAILED: claim expired and was taken over, result discarded", t.ID, name, intent.ID)
 		return true
 	}
 	// if a pause cancelled this run mid-flight, return the intent to the frontier
@@ -1428,9 +1558,16 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		log.Printf("[worker %s] intent %d ran out of time (exhausted), wrote back %s after settling", name, intent.ID, wrote)
 	}
 	var stateErr error
-	if state == "blocked" && isTaskLLMChainExhausted(err) {
+	switch {
+	case state != "done" && attempt > maxResumes:
+		// Out of resume budget: settle blocked with the explicit cause so the planner
+		// sees it instead of the intent silently churning.
+		e.agentEvent(t, db.AgentEvent{TaskID: wTaskID, AgentName: name, IntentID: intent.ID, Kind: db.EventResumeExhausted,
+			Detail: json.RawMessage(fmt.Sprintf(`{"attempt":%d,"max":%d}`, attempt, maxResumes))})
+		stateErr = t.Store.SettleIntentClaimBlocked(intent.ID, token, db.IntentBlockedResumeExhausted)
+	case state == "blocked" && isTaskLLMChainExhausted(err):
 		stateErr = t.Store.SettleIntentClaimBlocked(intent.ID, token, db.IntentBlockedLLMQuota)
-	} else {
+	default:
 		stateErr = t.Store.SettleIntentClaim(intent.ID, token, state)
 	}
 	if stateErr != nil {
@@ -1523,8 +1660,35 @@ func sleepCtx(ctx context.Context, d time.Duration) (done bool) {
 	}
 }
 
-func (e *Engine) claimNext(t *Task, name string) (*db.Node, string) {
-	fr, err := t.Store.Frontier(20)
+// intentMaxResumes bounds how often one intent may be resumed (setting
+// intent_max_resumes, default 3, clamped 1..10).
+func (e *Engine) intentMaxResumes() int {
+	const def = 3
+	v, ok, err := e.m.pg.GetSetting("intent_max_resumes")
+	if err != nil || !ok {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 1 {
+		return def
+	}
+	if n > 10 {
+		return 10
+	}
+	return n
+}
+
+// claimNext claims the next intent for an agent; an empty role claims the plain
+// priority-ordered frontier (tests and legacy callers pass no role).
+func (e *Engine) claimNext(t *Task, name string, roles ...string) (*db.Node, string) {
+	role := ""
+	if len(roles) > 0 {
+		role = roles[0]
+	}
+	if role == "" {
+		role = db.AgentRoleGeneral
+	}
+	fr, err := t.Store.FrontierForRole(role, 20)
 	if err != nil {
 		log.Printf("[engine] task %s frontier read failed: %v", t.ID, err)
 		return nil, ""

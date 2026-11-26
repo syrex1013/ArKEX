@@ -26,8 +26,8 @@ const (
 
 // Vault manages per-engagement auth identities with encrypted credential storage.
 type Vault struct {
-	db        *pgxpool.Pool
-	encKey    []byte // 32-byte AES-256 key
+	db     *pgxpool.Pool
+	encKey []byte // 32-byte AES-256 key
 }
 
 func New(db *pgxpool.Pool, encKey []byte) (*Vault, error) {

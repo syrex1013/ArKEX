@@ -65,6 +65,168 @@ export interface EngagementWithStats extends Engagement {
   stats: EngagementStats;
 }
 
+// ---- Engagement records (timeline, review queue, brief) ----
+
+export type EngagementRecordKind = "scope_revision" | "operator_decision" | "milestone" | "brief" | "note";
+export type EngagementRecordStatus = "open" | "accepted" | "superseded" | "done";
+
+export interface EngagementRecord {
+  id: number;
+  engagement_id: number;
+  kind: EngagementRecordKind;
+  title: string;
+  body: string;
+  actor: string;
+  status: EngagementRecordStatus;
+  due_at?: string;
+  completed_at?: string;
+  criteria: string;
+  supersedes_id?: number;
+  source_kind: string;
+  source_id?: number;
+  payload?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EngagementRecordInput {
+  kind: EngagementRecordKind;
+  title: string;
+  body?: string;
+  actor?: string;
+  due_at?: string | null;
+  criteria?: string;
+  supersedes_id?: number | null;
+  source_kind?: string;
+  source_id?: number;
+  payload?: Record<string, unknown>;
+}
+
+export interface EngagementReview {
+  id: number;
+  engagement_id: number;
+  operator: string;
+  reviewed_at: string;
+  up_to_record_id: number;
+}
+
+// One row of the unioned engagement timeline (records, task outcome deltas,
+// new findings, retests, checkpoints, coverage gaps). `link` deep-links to the
+// task detail page.
+export interface TimelineEntry {
+  entry_id: number;
+  kind: EngagementRecordKind | "task_outcome" | "finding" | "retest" | "checkpoint" | "coverage_gap";
+  created_at: string;
+  task_id?: number;
+  source_kind: string;
+  source_id: number;
+  title: string;
+  summary: string;
+  payload?: Record<string, unknown>;
+  link: string;
+}
+
+export interface TaskOutcomeFindings {
+  total: number;
+  confirmed: number;
+  open: number;
+  false_positive: number;
+  duplicate: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}
+
+export interface TaskOutcomeRetests {
+  reproduced: number;
+  fixed: number;
+  inconclusive: number;
+}
+
+export interface TaskOutcomeTokens {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+}
+
+export interface TaskOutcome {
+  task_id: number;
+  status: string;
+  category_id: number;
+  company_id: number;
+  findings: TaskOutcomeFindings;
+  retests: TaskOutcomeRetests;
+  tokens: TaskOutcomeTokens;
+  tool_calls: number;
+  skill_misses: number;
+  wall_seconds: number;
+}
+
+export interface BriefTask {
+  task_id: number;
+  name: string;
+  status: string;
+  link: string;
+  outcome: TaskOutcome;
+}
+
+export interface BriefCoverageGap {
+  task_id: number;
+  surface: string;
+  risk_area: string;
+  evidence: string;
+  reason: string;
+  worker: string;
+  updated_at: string;
+  link: string;
+}
+
+export interface EngagementBrief {
+  engagement_id: number;
+  name: string;
+  generated_at: string;
+  review?: EngagementReview | null;
+  recent_records: EngagementRecord[];
+  active_scope?: EngagementRecord | null;
+  open_decisions: EngagementRecord[];
+  open_milestones: EngagementRecord[];
+  tasks: BriefTask[];
+  severity: TaskOutcomeFindings;
+  coverage_gaps: BriefCoverageGap[];
+}
+
+// Union operator queue: everything across the engagement that needs a human
+// decision, ordered newest-first by the server.
+export type EngagementQueueKind = "decision" | "milestone" | "finding" | "approval" | "path" | "coverage_gap";
+
+export interface EngagementQueueItem {
+  id: number;
+  kind: EngagementQueueKind;
+  title: string;
+  detail: string;
+  task_id: number;
+  task_name: string;
+  severity: string;
+  created_at: string;
+  link: string;
+}
+
+export interface EngagementQueueCounts {
+  decision: number;
+  milestone: number;
+  finding: number;
+  approval: number;
+  path: number;
+  coverage_gap: number;
+}
+
+export interface EngagementQueue {
+  items: EngagementQueueItem[];
+  counts: EngagementQueueCounts;
+}
+
 export interface TaskCategory {
   id: number;
   name: string;
@@ -1793,4 +1955,142 @@ export interface InterceptExecution {
   session: string;
   seq: number;
   items: Activity[];
+}
+
+// Long-horizon swarm: per-task agent roster, lifecycle events, attack paths and
+// project knowledge, served by /api/tasks/{id}/swarm*.
+export type AgentRole = "recon" | "web" | "api" | "exploit" | "verify" | "general" | "chain";
+export type AgentState = "idle" | "working" | "cooldown" | "retired";
+
+export interface TaskAgent {
+  id: number;
+  task_id: number;
+  slot: number;
+  name: string;
+  role: AgentRole;
+  state: AgentState;
+  current_intent_id?: number;
+  last_heartbeat_at?: string;
+  intents_done: number;
+  findings: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentEvent {
+  id: number;
+  task_id: number;
+  agent_name?: string;
+  intent_id?: number;
+  kind: string;
+  detail?: unknown;
+  created_at: string;
+}
+
+// Explainability for a long-running swarm: which intent an agent is on, the
+// last durable result it produced, why it is not advancing, and outcome counts.
+export interface SwarmIntentRef {
+  id: number;
+  title: string;
+  kind: string;
+  state: string;
+  created_at: string;
+}
+
+export interface SwarmCheckpointRef {
+  phase: string;
+  next_step: string;
+  created_at: string;
+}
+
+export interface SwarmAgentDetail {
+  agent_id: number;
+  name: string;
+  role: string;
+  state: string;
+  current_intent: SwarmIntentRef | null;
+  last_checkpoint: SwarmCheckpointRef | null;
+  wait_reason: string;
+  intents_done: number;
+  findings: number;
+  last_event_at: string | null;
+}
+
+export interface SwarmProgress {
+  intents_settled: number;
+  intents_open: number;
+  findings_verified: number;
+  coverage_gaps: number;
+  blocked_agents: number;
+}
+
+export interface TaskSwarm {
+  agents: TaskAgent[];
+  intents_by_state: Record<string, number>;
+  finding_confidence: Record<string, number>;
+  events: AgentEvent[];
+  agents_detail?: SwarmAgentDetail[];
+  progress?: SwarmProgress;
+}
+
+export type PathState = "proposed" | "validating" | "validated" | "refuted";
+export type PathStepStatus = "proposed" | "verified" | "refuted";
+export type PathEdge = "enables" | "requires" | "pivots_to" | "escalates";
+
+export interface AttackPath {
+  id: number;
+  task_id: number;
+  title: string;
+  rationale: string;
+  state: PathState;
+  score: number;
+  refute_reason?: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AttackPathStep {
+  id: number;
+  path_id: number;
+  position: number;
+  kind: "asset" | "finding" | "fact";
+  ref_id: number;
+  edge: PathEdge;
+  precondition: string;
+  postcondition: string;
+  status: PathStepStatus;
+  evidence_note?: string;
+  validated_by?: string;
+  ref_exists: boolean;
+}
+
+export type KnowledgeReviewState = "current" | "disputed" | "due_revalidation";
+
+export interface KnowledgeItem {
+  id: number;
+  kind: string;
+  title: string;
+  body: string;
+  scope_company_id?: number;
+  scope_engagement_id?: number;
+  scope_asset_key?: string;
+  scope_vulnclass?: string;
+  confidence: number;
+  support: number;
+  source_task_id?: number;
+  status: "active" | "refuted" | "retired";
+  review_state: KnowledgeReviewState;
+  superseded_by?: number;
+  revalidate_after?: string;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface TaskProgress {
+  intents_by_state: Record<string, number>;
+  finding_confidence: Record<string, number>;
+  paths: Record<string, number>;
+  knowledge: Record<string, number>;
+  checkpointed_intents: number;
 }

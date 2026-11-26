@@ -19,14 +19,14 @@ const MaxEngagementNameRunes = 80
 // for tasks (client work, CTF events, research lines). Findings and stats
 // derive from the engagement's tasks; nothing else is stored per engagement.
 type Engagement struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 	// CompanyID is the legacy company binding; nil = unbound. Traffic scoping
 	// resolves the engagement's scope domains through it (see EngagementScopeDomains).
-	CompanyID  *int64    `json:"company_id,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	CompanyID *int64    `json:"company_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // EngagementStats aggregates the engagement's live tasks and their findings.

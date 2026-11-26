@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
@@ -56,8 +57,15 @@ func connectMCP(ctx context.Context, m *db.MCPServer, priv ExecPrivilege, proxyU
 // MCP tool's child environment so its own outbound requests follow the task egress
 // contract and verify the re-signed certificates (Node needs NODE_EXTRA_CA_CERTS;
 // a missing CA makes every npx MCP exit instead of answering tools/list).
+//
+// A socks5 proxy URL is never injected: Node's undici EnvHttpProxyAgent
+// (NODE_USE_ENV_PROXY) rejects any scheme but http/https and crashes the process
+// before it answers the MCP handshake, which reads as "connection closed". wgproxy
+// sessions always advertise http://, so only an operator-configured socks5 global
+// proxy lands here; under a kernel WireGuard tunnel a direct dial still exits
+// through the tunnel (iptables kill-switch), so the child stays leak-proof there.
 func stdioEnvWithProxy(env map[string]string, proxyURL, proxyCA string) map[string]string {
-	if proxyURL == "" {
+	if proxyURL == "" || strings.HasPrefix(proxyURL, "socks5://") || strings.HasPrefix(proxyURL, "socks5h://") {
 		return env
 	}
 	if env == nil {

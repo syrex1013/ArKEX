@@ -263,6 +263,12 @@ func (d *DB) FinishFindingRetest(id int64, status, reason string) error {
 			WHERE id=$1 AND verification_status IN ('unverified','not_assessed','blocked')`, findingID, note); err != nil {
 			return err
 		}
+		// Verification is one of the confidence inputs; the manual path
+		// (SetFindingVerification) recomputes it, so the retest path must too,
+		// inside the same transaction.
+		if err := RecomputeFindingConfidenceTx(context.Background(), tx, findingID); err != nil {
+			return err
+		}
 	}
 	if finalStatus == "completed" && verdict == "fixed" {
 		// Go through the notifying version, sharing the same semantics as a

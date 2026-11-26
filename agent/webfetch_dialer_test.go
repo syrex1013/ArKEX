@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/netip"
 	"slices"
 	"strings"
@@ -163,7 +164,8 @@ func runAgentKind(t *testing.T, kind string, f hookReachFixture, ctx context.Con
 // once the name answers another address it connects nowhere and asks. A fifth
 // agent kind built without the dialer fails this table once it is added to it.
 func TestWebFetchDialerWiredOnEveryAgentKind(t *testing.T) {
-	for _, kind := range []string{"worker", "planner", "mainagent", "chat"} {
+	// mainagent deliberately has no WebFetch (must dispatch workers instead).
+	for _, kind := range []string{"worker", "planner", "chat"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newHookReachFixture(t)
 			d := testDB(t)
@@ -221,9 +223,9 @@ func TestWebFetchProxiedDialIsTheProxy(t *testing.T) {
 	}
 }
 
-// D-8: a run built with the gate off keeps its direct retry when the gate is
-// switched on during the run, and the retry goes through the pinned dialer: a
-// pinned target is dialled at its pinned address, an unpinned one nowhere.
+// D-8: a run built with the gate off picks the gate up when it is switched on
+// during the run. The proxy hop itself is exempt; the target hop it dials is
+// gated: a pinned target reaches its pinned address, an unpinned one nowhere.
 func TestWebFetchRetryAfterLiveSwitchIsPinned(t *testing.T) {
 	d := testDB(t)
 	t.Cleanup(func() { _ = d.Close() })
@@ -231,14 +233,32 @@ func TestWebFetchRetryAfterLiveSwitchIsPinned(t *testing.T) {
 	scope, res, dialer := dialFixture(t, d, f.taskID)
 	var on atomic.Bool
 	scope.Enabled = on.Load
-	scope.Interceptor.SetDerivedExemptions(func() []string { return []string{"http://127.0.0.1:1"} })
 	addr, port, hits := listener(t, "retry-reached")
 	dialer.route("203.0.113.7:"+port, addr)
 	dialer.route("203.0.113.8:"+port, addr)
 	res.set("a.example", "203.0.113.7")
 	res.set("b.example", "203.0.113.8")
+	// The recording proxy dials its target through the same pinned dialer, so a
+	// proxy hop is exempt while the target hop stays gated. It uses the call
+	// context the agent tools will use.
 	ctx := intercept.WithTargetScope(t.Context(), scope)
-	tools := withWebFetch(ctx, nil, "http://127.0.0.1:1", "")
+	target := intercept.PinnedDialer("WebFetch", true)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := *r.URL
+		up.Scheme = "http"
+		pr := httputil.NewSingleHostReverseProxy(&up)
+		pr.Transport = &http.Transport{DialContext: func(dctx context.Context, network, addr string) (net.Conn, error) {
+			return target(ctx, network, addr)
+		}, DisableKeepAlives: true}
+		pr.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(err.Error()))
+		}
+		pr.ServeHTTP(w, r)
+	}))
+	t.Cleanup(proxy.Close)
+	scope.Interceptor.SetDerivedExemptions(func() []string { return []string{proxy.URL} })
+	tools := withWebFetch(ctx, nil, proxy.URL, "")
 
 	on.Store(true)
 	pinTarget(t, d, scope, "http://a.example:"+port+"/")
@@ -250,12 +270,16 @@ func TestWebFetchRetryAfterLiveSwitchIsPinned(t *testing.T) {
 		return r.Flatten(), r.IsError
 	}
 	if out, isErr := call("http://a.example:" + port + "/"); isErr || !strings.Contains(out, "retry-reached") || hits.Load() != 1 {
-		t.Fatalf("pinned target through the retry: error=%v out=%q", isErr, out)
+		t.Fatalf("pinned target: error=%v out=%q", isErr, out)
 	}
-	if out, isErr := call("http://b.example:" + port + "/"); !isErr || !strings.Contains(out, intercept.TargetApprovalPending) || hits.Load() != 1 {
-		t.Fatalf("unpinned target through the retry: error=%v out=%q", isErr, out)
+	// The proxy answers the refused dial with its 502, so the tool reports no
+	// transport error: the notice itself proves the target hop stayed gated.
+	if out, _ := call("http://b.example:" + port + "/"); !strings.Contains(out, intercept.TargetApprovalPending) || hits.Load() != 1 {
+		t.Fatalf("unpinned target: out=%q", out)
 	}
-	want := []string{"127.0.0.1:1", "203.0.113.7:" + port, "127.0.0.1:1"}
+	// No direct retry (fail-closed): one proxy hop, since the gate was off at
+	// build time but is on for both calls.
+	want := []string{proxy.Listener.Addr().String(), "203.0.113.7:" + port, proxy.Listener.Addr().String()}
 	if got := dialer.calls(); !slices.Equal(got, want) {
 		t.Fatalf("dialled %v, want %v", got, want)
 	}

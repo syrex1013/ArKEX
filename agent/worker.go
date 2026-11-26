@@ -100,6 +100,17 @@ type Worker struct {
 	// it with a per-run data envelope (field=lessons) and appends it after the
 	// rendered system prompt. The server renders the text from outcome records.
 	lessonsBlock string
+	// resume carries the engine's per-run resume decision (attempt/counter +
+	// latest checkpoint). Set via SetResume before Execute.
+	resume          ResumeState
+	knowledgeModeFn func() string
+	// discovery, when set, receives one DiscoveryItem per peer-visible write
+	// (fact/finding/asset). The engine publishes them onto the discovery bus.
+	discovery func(DiscoveryItem)
+	// systemEvent, when set, persists-and-live-publishes the run's lifecycle
+	// events (engine-owned broadcaster). nil = the worker persists via the DB
+	// store only, with no live swarm delivery.
+	systemEvent func(db.AgentEvent)
 }
 
 // WorkerSessionID returns the stable transcript key used by a worker intent.
@@ -157,6 +168,24 @@ func (w *Worker) SetConstraintInject(fn func() bool) { w.injectConstraints = fn 
 // frames it as data. The server renders it from outcome records; it is never
 // editable through the prompt UI.
 func (w *Worker) SetLessonsBlock(block string) { w.lessonsBlock = block }
+
+// SetKnowledgeMode wires the per-run knowledge injection mode resolver.
+func (w *Worker) SetKnowledgeMode(fn func() string) { w.knowledgeModeFn = fn }
+
+// knowledgeMode resolves the injection mode; unwired = inject.
+func (w *Worker) knowledgeMode() string {
+	if w.knowledgeModeFn == nil {
+		return "inject"
+	}
+	return strings.ToLower(strings.TrimSpace(w.knowledgeModeFn()))
+}
+
+// SetDiscovery wires the discovery-bus sink. nil = off.
+func (w *Worker) SetDiscovery(fn func(DiscoveryItem)) { w.discovery = fn }
+
+// SetSystemEvent wires the engine's persist+publish sink for lifecycle events
+// so the swarm stream receives them live. nil = DB-store persistence only.
+func (w *Worker) SetSystemEvent(fn func(db.AgentEvent)) { w.systemEvent = fn }
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (w *Worker) wantConstraints() bool { return w.injectConstraints == nil || w.injectConstraints() }
@@ -297,7 +326,9 @@ Finding quality gates (proof standard, measured impact, testing bounds):
 
 Operator handoff on environmental blocks:
 - When a command or tool fails for an environmental reason (a sandboxed or filtered network path, a missing binary or key, TLS or proxy interception, a permission this runtime lacks), stop after the first failure: do not retry with different flags, do not switch tools hunting for a bypass, and do not fall through to an equivalent command.
-- Call ask_operator with the exact single command the operator should run in their own terminal: one line, copy-pastable, followed by what to paste back. One command per request; never batch. Wait for the reply instead of burning turns.`
+- Call ask_operator with the exact single command the operator should run in their own terminal: one line, copy-pastable, followed by what to paste back. One command per request; never batch. Wait for the reply instead of burning turns.
+- On a resumed run follow the checkpoint block and do not redo completed steps.
+- Call remember when a reusable project fact appears (asset ownership, a credential source, a blocked path).`
 
 // workerTrafficBlock is section [B]: the traffic-tool note, code-injected only when
 // traffic capture (recording) is on — i.e. the traffic_* tools actually exist.
@@ -504,6 +535,20 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	tsx.SetOwnerNode(intent.ID)         // assets this worker discovers anchor to its intent → visible to the task
 	tsx.SetEnrich(enr)                  // async DNS/HTTP auto-completion for assets this worker writes
 	tsx.SetNotifyFinding(notifyFinding) // when report_finding lands, wake the planner on the spot with "which intent + finding"
+	// Discovery bus sink: peer-visible writes (fact/finding/asset) flow to the
+	// engine's publisher. The run identity (agent/intent) is filled here — the
+	// ToolSet knows the owning node, the worker knows the run.
+	if w.discovery != nil {
+		tsx.SetDiscovery(func(it DiscoveryItem) {
+			if it.Agent == "" {
+				it.Agent = name
+			}
+			if it.IntentID == 0 {
+				it.IntentID = intent.ID
+			}
+			w.discovery(it)
+		})
+	}
 	// base = built-in worker tools ∪ host tools (traffic) ∪ default tools (incl. Bash);
 	// then augment with the agent's visible skills/MCP. During the SDK settlement
 	// phase, Bash is hidden via Settlement.DisabledTools (no local gating needed).
@@ -532,6 +577,27 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// This intent's dedicated work dir <workDir>/tasks/<taskID>/i<intentID> is created
 	// by the engine first.
 	runDir := ensureRunDir(w.workDir, taskID, intent.ID)
+	if taskID == 0 && ts != nil { // the store knows the task through exploration_id
+		if id, err := ts.TaskID(); err == nil {
+			taskID = id
+		}
+	}
+	// Checkpointer: the durable progress record of this run. Every tool call is
+	// observed; flushes are interval-limited; a resumed run reads the latest row.
+	var cp *Checkpointer
+	if ts.DB() != nil && taskID > 0 {
+		cp = NewCheckpointer(ts.DB(), taskID, intent.ID, name, w.resume.Attempt)
+		cp.onWrite = func() { // one lifecycle event per persisted checkpoint
+			ev := db.AgentEvent{TaskID: taskID, AgentName: name, IntentID: intent.ID, Kind: db.EventCheckpoint}
+			if w.systemEvent != nil { // engine sink: persist + live swarm publish
+				w.systemEvent(ev)
+				return
+			}
+			if _, err := ts.DB().AddAgentEvent(ev); err != nil {
+				log.Printf("[agent-lifecycle] task=%d agent=%s intent=%d kind=%s FAILED: %v", taskID, name, intent.ID, db.EventCheckpoint, err)
+			}
+		}
+	}
 	// The run-wide intent is not the current tool action. Do not forward it or
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
@@ -629,6 +695,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		opts.Hooks = hooks
 	}
 	opts.Hooks = SpillHooks(opts.Hooks, opts.ToolOutputDir)
+	if cp != nil {
+		opts.Hooks = WithCheckpoint(opts.Hooks, cp)
+	}
 	opts.Hooks = WithRefusalRerun(opts.Hooks) // a prose refusal is rerun instead of ending the run bare
 	// The session id is the provider-side identity (session header, usage metering)
 	// with or without persistence; Norma only puts it on ctx when it writes a transcript.
@@ -650,8 +719,50 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// to compact away. In the rare case the overview marshals to empty, fall back to a
 	// launch sentence so the first turn isn't an empty user message.
 	input := overview
+	// Fresh-launch peer context (right after the overview): the newest discovery
+	// events replayed chronologically, so a restarted run starts with what its
+	// peers already saw. Degradable — a failed read just skips the block.
+	if ts.DB() != nil && taskID > 0 {
+		if evs, err := ts.DB().RecentDiscoveries(taskID, 0, 20); err == nil && len(evs) > 0 {
+			items := make([]DiscoveryItem, 0, len(evs))
+			for _, ev := range evs {
+				items = append(items, DiscoveryItem{Kind: ev.Kind, Summary: ev.Summary, NodeID: ev.NodeID, IntentID: ev.IntentID, Agent: ev.AgentName})
+			}
+			input += "\n\n" + RenderDiscoveries(items)
+		}
+	}
+	// Project knowledge relevant to this intent (scope-ranked items from past
+	// runs), framed as data like the overview's derived fields. Degradable too;
+	// mode off | shadow | inject decides whether it reaches the input.
+	if w.knowledgeMode() != "off" {
+		if kb, ids := tsx.KnowledgeCandidates(nodeSummary(intent), 12); kb != "" {
+			if w.knowledgeMode() != "shadow" {
+				kenv := newDataEnvelope()
+				input += "\n\n" + kenv.intro() + "\n\n" + kenv.wrap("knowledge", kb)
+			}
+			if ts.DB() != nil && taskID > 0 { // record what would be shown / was shown
+				detail, _ := json.Marshal(map[string]any{"ids": ids})
+				_, _ = ts.DB().AddAgentEvent(db.AgentEvent{TaskID: taskID, AgentName: name, IntentID: intent.ID, Kind: db.EventKnowledgeInject, Detail: detail})
+				logKnowledgeInjections(ts.DB(), taskID, intent.ID, name, w.knowledgeMode(), ids)
+			}
+		}
+	}
 	if strings.TrimSpace(input) == "" {
 		input = "Start executing the intent claimed in system: do only it, produce only facts, assets, findings, stop when done."
+	}
+	// Resumed run: the persisted checkpoint block leads the launch input so the worker
+	// continues from evidence instead of repeating finished work. Kept separate and
+	// prepended last: the human-message and existing-transcript branches below replace
+	// input entirely, which would otherwise drop the block exactly on the resume path.
+	resumeBlock := ""
+	if w.resume.Last != nil {
+		resumeBlock = renderResumeBlock(w.resume.Last, w.resume.Attempt, w.resume.Max)
+		if ts.DB() != nil && taskID > 0 { // one lifecycle event per resume
+			detail, _ := json.Marshal(map[string]int{"attempt": w.resume.Attempt, "max": w.resume.Max})
+			if _, err := ts.DB().AddAgentEvent(db.AgentEvent{TaskID: taskID, AgentName: name, IntentID: intent.ID, Kind: db.EventResume, Detail: detail}); err != nil {
+				log.Printf("[agent-lifecycle] task=%d agent=%s intent=%d kind=%s FAILED: %v", taskID, name, intent.ID, db.EventResume, err)
+			}
+		}
 	}
 
 	// Experimental: when on, noa takes over context compression (archives persist under <workDir>/noa/<SessionID>).
@@ -692,6 +803,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 				"\n\nExecute this human input first."
 		}
 	}
+	if resumeBlock != "" {
+		input = resumeBlock + "\n\n" + input
+	}
 
 	// Budgets + settlement are owned by the SDK (MaxTurns/MaxDuration + Settlement):
 	// on hit it runs a wrap-up turn and finishes with ReasonMaxTurns/ReasonTimeout.
@@ -700,5 +814,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// still settles (no external hard-timeout backstop needed). ctx itself carries only
 	// pause / planner kill / shutdown, which the engine distinguishes and re-queues/stops.
 	_, reason, err := captureRunSession(ctx, s, input, emitWrap)
+	if cp != nil {
+		cp.Finish(lastAssistantText(s.Messages()), true) // the final state always persists
+	}
 	return reason, tsx.Writes(), err
 }

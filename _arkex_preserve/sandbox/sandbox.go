@@ -127,4 +127,3 @@ func (m *Manager) Destroy(ctx context.Context, containerID string) error {
 	slog.Debug("sandbox destroyed", "container_id", containerID[:min(12, len(containerID))])
 	return nil
 }
-

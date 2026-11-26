@@ -114,7 +114,7 @@ Because `docs/examples/artex.service` runs the server as the non-root `<artex-us
 
 ## Web setup
 
-On a new database, visit `http://127.0.0.1:8787/setup`, provide the one-time setup token from the private startup log or journal (`journalctl -u artex.service`), and choose a unique password of at least 12 characters. The username is `ARTEX`. Store the password in your password manager rather than in a plaintext file on disk.
+On a new database, visit `http://127.0.0.1:8787/setup`, provide the one-time setup token from the private startup log or journal (`journalctl -u artex.service`), and choose a unique password of at least 10 characters. The username is `ARTEX`. Store the password in your password manager rather than in a plaintext file on disk.
 
 ## Reboot persistence verification (example)
 

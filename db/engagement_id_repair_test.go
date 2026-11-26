@@ -17,7 +17,11 @@ func TestEngagementIDRepairMigration(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Simulate the drifted install.
+	// Simulate the drifted install. NOT NULL needs every row non-null, and this
+	// package DB keeps rows of earlier runs, so clear them first.
+	if _, err := d.Exec(`DELETE FROM tasks`); err != nil {
+		t.Fatal(err)
+	}
 	for _, q := range []string{
 		`CREATE OR REPLACE FUNCTION legacy_engagement_id() RETURNS bigint LANGUAGE sql STABLE AS $$ SELECT NULL::bigint $$`,
 		`ALTER TABLE tasks ALTER COLUMN engagement_id SET DEFAULT legacy_engagement_id()`,

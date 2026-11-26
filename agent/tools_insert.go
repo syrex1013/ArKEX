@@ -398,6 +398,9 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				}
 			}
 
+			for _, r := range results {
+				t.emitDiscovery("asset", fmt.Sprintf("registered %s asset #%d", r.Type, r.ID), r.ID)
+			}
 			return jsonResult(map[string]any{
 				"results": results,
 				"errors":  errs,
@@ -724,6 +727,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// node_detail: once a worker has an intent_id/node id, it can look up that node's
 		// full detail (pairs with the review above).
 		t.nodeDetail(),
+		// project knowledge: durable cross-run facts (read + write).
+		t.rememberKnowledge(), t.searchKnowledge(),
 		// The following tools are still [not given] to workers, reserved for
 		// planner/main (reading context, cross-work retrospection are planning duties; a
 		// worker only executes and writes back its single intent):

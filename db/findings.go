@@ -41,6 +41,7 @@ type DBFinding struct {
 
 	Counterevidence     string // what was tested and did not work; optional, "" = not given
 	ConfidenceRationale string // why the conclusion holds; optional, "" = not given
+	Confidence          int    // 0-100, derived from evidence only (db/finding_confidence.go)
 }
 
 // Finding triage states (findings.status).
@@ -134,7 +135,7 @@ const findingSelectCols = `f.id, f.task_id, f.node_id, f.vulnclass, COALESCE(f.n
 	       f.evidence, f.worker, f.asset_ids, COALESCE(f.status, 'pending'), COALESCE(f.report_state, 'none'), f.created_at,
 	       COALESCE(t.description, '') AS task_description, f.evidence_version, f.report_evidence_version,
 	       f.poe_level, COALESCE(f.verification_status, 'unverified'), COALESCE(f.verification_note, ''),
-	       f.counterevidence, f.confidence_rationale,
+	       f.counterevidence, f.confidence_rationale, f.confidence,
  (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id)`
 
 // scanFindings materializes rows selected via findingSelectCols.
@@ -148,7 +149,7 @@ func scanFindings(rows interface {
 		f := &DBFinding{}
 		var aidsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
-			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.ReportState, &f.CreatedAt, &f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.PoELevel, &f.VerificationStatus, &f.VerificationNote, &f.Counterevidence, &f.ConfidenceRationale, &f.TrafficCount); err != nil {
+			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.ReportState, &f.CreatedAt, &f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.PoELevel, &f.VerificationStatus, &f.VerificationNote, &f.Counterevidence, &f.ConfidenceRationale, &f.Confidence, &f.TrafficCount); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
@@ -187,7 +188,7 @@ type FindingFilter struct {
 	VulnClass          string
 	TaskID             string // task id (in string form; empty/invalid = do not filter by task)
 	Query              string // fuzzy search keyword over name/class/summary/evidence/report body
-	Sort               string // "severity" | "time"
+	Sort               string // "severity" | "confidence" | "time"
 	// AssetScope is a node key of the asset tree (a:<id> / c:<id> / r:<domain> /
 	// __none__); selecting a node means selecting its whole subtree.
 	// Empty = do not filter by asset.
@@ -307,6 +308,9 @@ func (d *DB) ListFindingsPage(f FindingFilter, page, pageSize int) ([]*DBFinding
 	}
 
 	order := "f.created_at DESC, f.id DESC"
+	if f.Sort == "confidence" {
+		order = "f.confidence DESC, f.created_at DESC, f.id DESC"
+	}
 	if f.Sort == "severity" {
 		// critical > high > medium > low > others, then newest first.
 		order = `CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC, f.id DESC`
@@ -372,6 +376,9 @@ func (d *DB) ListFindingGroups(f FindingFilter, page, pageSize int) ([]FindingGr
 	}
 
 	order := "MAX(f.created_at) DESC, t.id DESC NULLS LAST"
+	if f.Sort == "confidence" {
+		order = "MAX(f.confidence) DESC, MAX(f.created_at) DESC, t.id DESC NULLS LAST"
+	}
 	if f.Sort == "severity" {
 		order = `MAX(CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) DESC, MAX(f.created_at) DESC, t.id DESC NULLS LAST`
 	}
@@ -563,7 +570,7 @@ func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, 
 		var aidsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.ReportState, &f.CreatedAt,
-			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.PoELevel, &f.VerificationStatus, &f.VerificationNote, &f.Counterevidence, &f.ConfidenceRationale, &f.TrafficCount, &f.Report); err != nil {
+			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.PoELevel, &f.VerificationStatus, &f.VerificationNote, &f.Counterevidence, &f.ConfidenceRationale, &f.Confidence, &f.TrafficCount, &f.Report); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
@@ -736,7 +743,7 @@ func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 		WHERE f.id = $1`, id).Scan(
 		&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 		&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.ReportState, &f.CreatedAt,
-		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.PoELevel, &f.VerificationStatus, &f.VerificationNote, &f.Counterevidence, &f.ConfidenceRationale, &f.TrafficCount, &f.Report)
+		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.PoELevel, &f.VerificationStatus, &f.VerificationNote, &f.Counterevidence, &f.ConfidenceRationale, &f.Confidence, &f.TrafficCount, &f.Report)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -797,7 +804,29 @@ func (d *DB) DeleteFindingsByTask(taskID int64) (int64, error) {
 // do not care about notifications (parameter validation, retest flows) can
 // drive the status on their own.
 func (d *DB) SetFindingStatus(id int64, status string) (int64, error) {
-	return d.setFindingCol(id, "status", "status", status)
+	n, err := d.setFindingCol(id, "status", "status", status)
+	if err != nil || n == 0 {
+		return n, err
+	}
+	if _, err := d.RecomputeFindingConfidence(context.Background(), id); err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+// SetFindingStatusWithCanonical sets the status and, for "duplicate", records the
+// canonical finding the row duplicates.
+func (d *DB) SetFindingStatusWithCanonical(id int64, status string, canonicalID int64) (int64, error) {
+	n, err := d.SetFindingStatus(id, status)
+	if err != nil || n == 0 {
+		return n, err
+	}
+	if status == FindingDuplicate && canonicalID > 0 && canonicalID != id {
+		if _, err := d.Exec(`UPDATE findings SET duplicate_of=$2 WHERE id=$1`, id, canonicalID); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // SetFindingReportState updates one finding's report stage and mirrors it onto

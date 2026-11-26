@@ -17,6 +17,8 @@ import type {
   Asset,
   AssetInterceptRule,
   AssetInterceptRuleInput,
+  AttackPath,
+  AttackPathStep,
   Audit,
   BatchCategoryItem,
   BatchControlItem,
@@ -34,6 +36,11 @@ import type {
   DeleteTaskResult,
   Edge,
   Engagement,
+  EngagementBrief,
+  EngagementQueue,
+  EngagementRecord,
+  EngagementRecordInput,
+  EngagementReview,
   EngagementWithStats,
   EvidenceBodyPreview,
   ExplorationNodePage,
@@ -58,6 +65,7 @@ import type {
   InterceptRule,
   JudgeConfig,
   JudgeUsage,
+  KnowledgeItem,
   LLMPoolStatus,
   LLMProfile,
   LLMRecordDetail,
@@ -96,8 +104,11 @@ import type {
   TaskGoal,
   TaskLLMResolutions,
   TaskNode,
+  TaskProgress,
   TaskScopeRow,
+  TaskSwarm,
   TaskTemplate,
+  TimelineEntry,
   TokenTotal,
   TokenUsage,
   Tool,
@@ -444,6 +455,26 @@ export const api = {
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),
   taskCredentials: (id: string) => get<TaskCredential[]>(`/tasks/${id}/credentials`).then((r) => arr(r)),
+  taskSwarm: (id: string) => get<TaskSwarm>(`/tasks/${id}/swarm`),
+  taskPaths: (id: string, state?: string) =>
+    get<AttackPath[]>(`/tasks/${id}/paths${state ? `?state=${encodeURIComponent(state)}` : ""}`).then((r) => arr(r)),
+  taskPath: (id: string, pathID: number) =>
+    get<{ path: AttackPath; steps: AttackPathStep[] }>(`/tasks/${id}/paths/${pathID}`),
+  validatePathStep: (id: string, pathID: number, position: number, note?: string) =>
+    post<{ path: AttackPath; steps: AttackPathStep[] }>(`/tasks/${id}/paths/${pathID}/steps/${position}/validate`, {
+      note: note ?? "",
+    }),
+  refutePathStep: (id: string, pathID: number, position: number, note?: string) =>
+    post<{ path: AttackPath; steps: AttackPathStep[] }>(`/tasks/${id}/paths/${pathID}/steps/${position}/refute`, {
+      note: note ?? "",
+    }),
+  taskKnowledge: (id: string, q?: string) =>
+    get<KnowledgeItem[]>(`/tasks/${id}/knowledge${q ? `?q=${encodeURIComponent(q)}` : ""}`).then((r) => arr(r)),
+  // human verdict on one project-memory item (current | disputed | due_revalidation);
+  // the response carries the refreshed item, so the caller re-renders from it
+  setKnowledgeReviewState: (id: number, reviewState: string) =>
+    patch<{ knowledge: KnowledgeItem }>(`/knowledge/${id}`, { review_state: reviewState }),
+  taskProgress: (id: string) => get<TaskProgress>(`/tasks/${id}/progress`),
   addTaskCredential: (id: string, input: TaskCredentialInput) =>
     post<TaskCredential>(`/tasks/${id}/credentials`, input),
   deleteTaskCredential: (id: string, cid: number) => del(`/tasks/${id}/credentials/${cid}`),
@@ -1566,6 +1597,42 @@ export const api = {
     update: (id: number, name: string, description: string) =>
       patch<Engagement>(`/engagements/${id}`, { name, description }),
     remove: (id: number) => del(`/engagements/${id}`),
+    records: (id: number, q?: { kinds?: string; status?: string; since?: number; limit?: number }) => {
+      const p = new URLSearchParams();
+      if (q?.kinds) p.set("kinds", q.kinds);
+      if (q?.status) p.set("status", q.status);
+      if (q?.since) p.set("since", String(q.since));
+      if (q?.limit) p.set("limit", String(q.limit));
+      const qs = p.toString();
+      return get<{ records: EngagementRecord[] }>(`/engagements/${id}/records${qs ? `?${qs}` : ""}`).then((r) =>
+        arr(r.records),
+      );
+    },
+    createRecord: (id: number, rec: EngagementRecordInput) => post<EngagementRecord>(`/engagements/${id}/records`, rec),
+    updateRecord: (recordId: number, status: string) =>
+      patch<EngagementRecord>(`/engagements/records/${recordId}`, { status }),
+    timeline: (id: number, q?: { since?: string; kinds?: string; limit?: number }) => {
+      const p = new URLSearchParams();
+      if (q?.since) p.set("since", q.since);
+      if (q?.kinds) p.set("kinds", q.kinds);
+      if (q?.limit) p.set("limit", String(q.limit));
+      const qs = p.toString();
+      return get<{ entries: TimelineEntry[] }>(`/engagements/${id}/timeline${qs ? `?${qs}` : ""}`).then((r) =>
+        arr(r.entries),
+      );
+    },
+    // Marks everything up to the newest record as reviewed and returns the
+    // diff that was just reviewed.
+    review: (id: number, operator: string) =>
+      post<{ review: EngagementReview; records: EngagementRecord[]; entries: TimelineEntry[] }>(
+        `/engagements/${id}/review`,
+        { operator },
+      ),
+    brief: (id: number, operator?: string) =>
+      get<{ brief: EngagementBrief }>(
+        `/engagements/${id}/brief${operator ? `?operator=${encodeURIComponent(operator)}` : ""}`,
+      ),
+    queue: (id: number) => get<EngagementQueue>(`/engagements/${id}/queue`),
   },
   // Assign (or unassign, engagement_id=null) one task to an engagement.
   setTaskEngagement: (taskId: string, engagementId: number | null) =>

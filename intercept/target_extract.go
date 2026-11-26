@@ -29,6 +29,9 @@ var noTargetTools = toolSet(
 	"insert_assets", "add_company_scope", "add_task_scope", "list_assets",
 	"list_untested_assets", "list_companies", "report_finding", "record_fact",
 	"save_task_credential", "list_task_credentials", "ingest_bbot", "ingest_scan_output", "record_coverage",
+	// project knowledge and attack paths (ref ids, no live target)
+	"remember", "knowledge_search", "propose_path", "validate_path_step", "refute_path",
+	"list_paths", "path_detail",
 	// cross-task orchestration, findings and retests (server)
 	"list_tasks", "list_llm_profiles", "spawn_task", "pause_task", "get_task_graph",
 	"list_task_findings", "add_task_hint", "get_task_worker_trace",

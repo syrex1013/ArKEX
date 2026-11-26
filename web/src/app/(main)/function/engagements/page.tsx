@@ -31,6 +31,8 @@ import { api } from "@/lib/api";
 import type { EngagementWithStats } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { EngagementDetail } from "./engagement-detail";
+
 type FormState = { name: string; description: string };
 const emptyForm: FormState = { name: "", description: "" };
 
@@ -52,6 +54,8 @@ export default function EngagementsPage() {
   const [form, setForm] = React.useState<FormState>(emptyForm);
   const [saving, setSaving] = React.useState(false);
   const [deleting, setDeleting] = React.useState<EngagementWithStats | null>(null);
+
+  const selectedEngagement = engagements.find((e) => selectedId !== "0" && String(e.id) === selectedId) ?? null;
 
   function setF(patch: Partial<FormState>) {
     setForm((f) => ({ ...f, ...patch }));
@@ -84,7 +88,7 @@ export default function EngagementsPage() {
         toast.success(t("Engagement created"));
         setOpen(false);
       }
-      reload();
+      await reload();
     } catch (e) {
       toast.error(t("Save failed: {error}", { error: (e as Error).message }));
     } finally {
@@ -99,7 +103,7 @@ export default function EngagementsPage() {
       toast.success(t("Deleted: {name}", { name: deleting.name }));
       if (selectedId === String(deleting.id)) setSelectedId("0");
       setDeleting(null);
-      reload();
+      await reload();
     } catch (e) {
       toast.error(t("Delete failed: {error}", { error: (e as Error).message }));
     }
@@ -108,7 +112,7 @@ export default function EngagementsPage() {
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">{t("Engagements")}</h1>
+        <h1 className="font-semibold text-xl tracking-tight">{t("Engagements")}</h1>
         <p className="text-muted-foreground text-sm">
           {t("Group tasks and findings per engagement · click a card to scope the task list")}
         </p>
@@ -118,7 +122,7 @@ export default function EngagementsPage() {
         <button
           type="button"
           onClick={openAdd}
-          className="text-foreground/70 border-foreground/70 hover:bg-muted/60 hover:shadow-sm flex min-h-[116px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed transition"
+          className="flex min-h-[116px] flex-col items-center justify-center gap-2 rounded-xl border border-foreground/70 border-dashed text-foreground/70 transition hover:bg-muted/60 hover:shadow-sm"
         >
           <PlusIcon className="size-6" />
           <span className="text-sm">{t("New engagement")}</span>
@@ -131,13 +135,13 @@ export default function EngagementsPage() {
               key={e.id}
               onClick={() => setSelectedId(String(e.id))}
               className={cn(
-                "hover:border-primary/60 cursor-pointer gap-3 transition hover:shadow-sm",
-                selected && "border-primary ring-primary/30 ring-2",
+                "cursor-pointer gap-3 transition hover:border-primary/60 hover:shadow-sm",
+                selected && "border-primary ring-2 ring-primary/30",
               )}
             >
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <FolderOpenIcon className="text-muted-foreground size-4 shrink-0" />
+                  <FolderOpenIcon className="size-4 shrink-0 text-muted-foreground" />
                   <CardTitle className="truncate text-base">{e.name}</CardTitle>
                   {selected && <Badge className="ml-auto font-normal">{t("Active")}</Badge>}
                   <div className="ml-auto flex items-center gap-1" onClick={(ev) => ev.stopPropagation()}>
@@ -162,7 +166,7 @@ export default function EngagementsPage() {
                 </div>
               </CardHeader>
               <CardContent className="grid gap-3">
-                <p className="text-muted-foreground line-clamp-2 min-h-[2lh] text-sm">
+                <p className="line-clamp-2 min-h-[2lh] text-muted-foreground text-sm">
                   {e.description || t("No description")}
                 </p>
                 <div className="flex flex-wrap gap-1.5">
@@ -170,12 +174,12 @@ export default function EngagementsPage() {
                     {t("{count} tasks", { count: e.stats.tasks_total })}
                   </Badge>
                   {e.stats.tasks_running > 0 && (
-                    <Badge variant="outline" className="text-blue-500 font-normal">
+                    <Badge variant="outline" className="font-normal text-blue-500">
                       {t("{count} running", { count: e.stats.tasks_running })}
                     </Badge>
                   )}
                   {e.stats.tasks_done > 0 && (
-                    <Badge variant="outline" className="text-emerald-500 font-normal">
+                    <Badge variant="outline" className="font-normal text-emerald-500">
                       {t("{count} done", { count: e.stats.tasks_done })}
                     </Badge>
                   )}
@@ -215,9 +219,20 @@ export default function EngagementsPage() {
       </div>
 
       {engagements.length === 0 && (
-        <div className="text-muted-foreground flex flex-col items-center gap-2 py-12 text-sm">
+        <div className="flex flex-col items-center gap-2 py-12 text-muted-foreground text-sm">
           <FolderOpenIcon className="size-8 opacity-50" />
           <p>{t("No engagements yet. Create one to group tasks and findings.")}</p>
+        </div>
+      )}
+
+      {selectedEngagement && (
+        <div className="grid gap-3">
+          <div className="flex items-center gap-2">
+            <FolderOpenIcon className="size-4 text-muted-foreground" />
+            <h2 className="font-semibold text-lg tracking-tight">{selectedEngagement.name}</h2>
+            <span className="text-muted-foreground text-sm">{t("timeline, review queue and handoff brief")}</span>
+          </div>{" "}
+          <EngagementDetail engagement={selectedEngagement} />
         </div>
       )}
 

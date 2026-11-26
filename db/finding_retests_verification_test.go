@@ -37,12 +37,29 @@ func verificationOf(t *testing.T, d *DB, fid int64) (status string, poe int, not
 	return
 }
 
+func confidenceOf(t *testing.T, d *DB, fid int64) int {
+	t.Helper()
+	var score int
+	if err := d.QueryRow(`SELECT confidence FROM findings WHERE id=$1`, fid).Scan(&score); err != nil {
+		t.Fatal(err)
+	}
+	return score
+}
+
 func TestRetestReproducedVerifiesUnverifiedFinding(t *testing.T) {
 	d, fid := retestDB(t)
+	if got := confidenceOf(t, d, fid); got != 0 {
+		t.Fatalf("bare unverified confidence = %d, want 0", got)
+	}
 	runRetest(t, d, fid, "reproduced", "still exploitable with the original PoC", "completed")
 	status, _, note := verificationOf(t, d, fid)
 	if status != VerificationVerified || !strings.Contains(note, "retest") || !strings.Contains(note, "reproduced") {
 		t.Fatalf("verification after reproduced: status=%s note=%q", status, note)
+	}
+	// Verified adds +25 over the bare 0 baseline; without the recompute the
+	// score stayed stale at 0.
+	if got := confidenceOf(t, d, fid); got != 25 {
+		t.Fatalf("confidence after reproduced retest = %d, want 25", got)
 	}
 }
 

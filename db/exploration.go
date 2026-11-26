@@ -95,22 +95,23 @@ func jsonbClean(b []byte) []byte {
 
 // Node is a typed reasoning node (= old task_nodes). kind ∈ goal|intent|finding|hint.
 type Node struct {
-	FindingID     int64           `json:"finding_id,omitempty"` // populated by finding-aware reads; never inferred from ID
-	FindingNodeID int64           `json:"finding_node_id,omitempty"`
-	TrafficCount  int             `json:"traffic_count,omitempty"`
-	ID            int64           `json:"id"`
-	Kind          string          `json:"kind"`
-	Payload       json.RawMessage `json:"payload"`
-	Priority      int             `json:"priority"`
-	State         string          `json:"state"`
-	Origin        string          `json:"origin,omitempty"`
-	Owner         string          `json:"owner,omitempty"`
-	BlockedReason string          `json:"blocked_reason,omitempty"`
-	DeleteReason  string          `json:"delete_reason,omitempty"` // non-empty only when an intent is soft-deleted (state='deleted')
-	Anchors       []int64         `json:"anchors,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	SourceTaskID  int64           `json:"source_task_id,omitempty"`
-	Inherited     bool            `json:"inherited,omitempty"`
+	FindingID         int64           `json:"finding_id,omitempty"`         // populated by finding-aware reads; never inferred from ID
+	FindingConfidence int             `json:"finding_confidence,omitempty"` // populated by finding-aware reads
+	FindingNodeID     int64           `json:"finding_node_id,omitempty"`
+	TrafficCount      int             `json:"traffic_count,omitempty"`
+	ID                int64           `json:"id"`
+	Kind              string          `json:"kind"`
+	Payload           json.RawMessage `json:"payload"`
+	Priority          int             `json:"priority"`
+	State             string          `json:"state"`
+	Origin            string          `json:"origin,omitempty"`
+	Owner             string          `json:"owner,omitempty"`
+	BlockedReason     string          `json:"blocked_reason,omitempty"`
+	DeleteReason      string          `json:"delete_reason,omitempty"` // non-empty only when an intent is soft-deleted (state='deleted')
+	Anchors           []int64         `json:"anchors,omitempty"`
+	CreatedAt         time.Time       `json:"created_at"`
+	SourceTaskID      int64           `json:"source_task_id,omitempty"`
+	Inherited         bool            `json:"inherited,omitempty"`
 }
 
 // Activity is one worker execution step (= old task_activity).
@@ -215,6 +216,10 @@ func (d *DB) CreateExploration(description, goal string) (int64, error) {
 func (d *DB) Exploration(id int64) *ExplorationStore { return &ExplorationStore{db: d, expID: id} }
 
 func (s *ExplorationStore) ID() int64 { return s.expID }
+
+// DB returns the underlying datasource (swarm, checkpoint and knowledge stores
+// hang off it; they are task-scoped, not exploration-scoped).
+func (s *ExplorationStore) DB() *DB { return s.db }
 
 // Root returns the exploration's description and goal.
 func (s *ExplorationStore) Root() (description, goal string, err error) {
@@ -425,6 +430,35 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent'
 func (s *ExplorationStore) ReopenBlockedIntents() (int64, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
 WHERE exploration_id=$1 AND kind='intent' AND state='blocked'`, s.expID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// ReopenMetGoals flips every met goal back to open so an operator task rerun has
+// unmet work for the planner. Abandoned goals stay abandoned. Returns how many
+// rows changed.
+func (s *ExplorationStore) ReopenMetGoals() (int64, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET state='open', completed_at=NULL, content_version=content_version+1
+WHERE exploration_id=$1 AND kind='goal' AND state='met'`, s.expID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// ReopenTerminalIntents flips settled intents (done/blocked/exhausted/stopped)
+// back to open. Used by goalless task rerun so the frontier is not empty and the
+// engine cannot settle to done on the first wake. Deleted intents stay deleted.
+func (s *ExplorationStore) ReopenTerminalIntents() (int64, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET state='open', completed_at=NULL, blocked_reason=NULL, content_version=content_version+1
+WHERE exploration_id=$1 AND kind='intent'
+  AND state IN ('done','blocked','exhausted','stopped')`, s.expID)
 	if err != nil {
 		return 0, err
 	}
@@ -1245,6 +1279,22 @@ func (s *ExplorationStore) Frontier(limit int) ([]*Node, error) {
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
 WHERE exploration_id=$1 AND kind='intent' AND state='open'
 ORDER BY priority DESC, id ASC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
+}
+
+// FrontierForRole is Frontier with a role preference: open intents whose
+// payload->>'role' equals role come first, then priority desc, then id.
+func (s *ExplorationStore) FrontierForRole(role string, limit int) ([]*Node, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND state='open'
+ORDER BY (payload->>'role' = $2) DESC NULLS LAST, priority DESC, id ASC LIMIT $3`, s.expID, role, limit)
 	if err != nil {
 		return nil, err
 	}

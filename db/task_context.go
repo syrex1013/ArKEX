@@ -11,6 +11,11 @@ import (
 
 const IntentBlockedLLMQuota = "llm_quota_exhausted"
 
+// IntentBlockedResumeExhausted marks an intent whose resume attempts exceeded
+// intent_max_resumes: settled blocked so the planner sees a terminal cause
+// instead of silent resume churn.
+const IntentBlockedResumeExhausted = "resume_exhausted"
+
 // TaskLLMProfile is one ordered entry in a task's explicit failover chain.
 type TaskLLMProfile struct {
 	ProfileID   int64      `json:"profile_id"`

@@ -4,6 +4,7 @@
 package wgproxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -253,7 +255,21 @@ func (s *Session) handleConn(ctx context.Context, c net.Conn) {
 		s.handleSOCKS5(ctx, c, buf[:n])
 		return
 	}
-	s.handleHTTPConnect(ctx, c, buf[:n])
+	fields := strings.Fields(firstLine(buf[:n]))
+	if len(fields) >= 2 && strings.EqualFold(fields[0], "CONNECT") {
+		s.handleHTTPConnect(ctx, c, buf[:n])
+		return
+	}
+	s.handleHTTPForward(ctx, c, buf[:n])
+}
+
+// firstLine returns the text up to the first CRLF (or the whole input when no
+// line break arrived yet).
+func firstLine(b []byte) string {
+	if i := bytes.Index(b, []byte("\r\n")); i >= 0 {
+		return string(b[:i])
+	}
+	return string(b)
 }
 
 // handleHTTPConnect parses "CONNECT host:port HTTP/1.x" and tunnels through the netstack.
@@ -287,6 +303,119 @@ func (s *Session) handleHTTPConnect(ctx context.Context, c net.Conn, head []byte
 		return
 	}
 	pumpBoth(c, up)
+}
+
+// handleHTTPForward serves plain-HTTP requests sent in absolute-form
+// ("GET http://host/path HTTP/1.1"), the way proxy-aware clients forward
+// http:// URLs. The request head is rewritten to origin-form, the origin is
+// dialed through the netstack, and the exchange is pumped verbatim. Anything
+// that is not an absolute-form http:// request (origin-form, absolute-form
+// https://) is answered 400: https:// belongs in CONNECT, which the dispatch
+// above routes first.
+func (s *Session) handleHTTPForward(ctx context.Context, c net.Conn, head []byte) {
+	head, ok := completeHead(c, head)
+	if !ok {
+		c.Write([]byte("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"))
+		return
+	}
+	target, out, ok := parseForwardRequest(head)
+	if !ok {
+		c.Write([]byte("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"))
+		return
+	}
+	up, err := s.tun.DialContext(ctx, "tcp", target)
+	if err != nil {
+		s.dialFail()
+		c.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n"))
+		return
+	}
+	defer up.Close()
+	s.dialOK()
+	if _, err := up.Write(out); err != nil {
+		return
+	}
+	pumpBoth(c, up)
+}
+
+const (
+	headTerm     = "\r\n\r\n"
+	maxHeadBytes = 65536
+)
+
+// completeHead accumulates until the request head terminator is present, so a
+// head split across reads (or larger than the first peek) still parses. The
+// returned buffer includes any body bytes that arrived beyond the terminator.
+func completeHead(c net.Conn, head []byte) ([]byte, bool) {
+	if bytes.Contains(head, []byte(headTerm)) {
+		return head, true
+	}
+	buf := make([]byte, 4096)
+	for len(head) < maxHeadBytes {
+		n, err := c.Read(buf)
+		if n > 0 {
+			head = append(head, buf[:n]...)
+			if bytes.Contains(head, []byte(headTerm)) {
+				return head, true
+			}
+		}
+		if err != nil {
+			return head, false
+		}
+	}
+	return head, false
+}
+
+// parseForwardRequest rewrites an absolute-form HTTP request head into
+// origin-form and returns the dial target host:port. Headers after the request
+// line pass through unchanged; a missing Host header is synthesized from the
+// authority. ok=false marks a request that must be answered 400.
+func parseForwardRequest(head []byte) (target string, out []byte, ok bool) {
+	end := bytes.Index(head, []byte(headTerm))
+	if end < 0 {
+		return "", nil, false
+	}
+	lineEnd := bytes.Index(head, []byte("\r\n"))
+	if lineEnd < 0 || lineEnd > end {
+		return "", nil, false
+	}
+	fields := strings.Fields(string(head[:lineEnd]))
+	if len(fields) < 3 {
+		return "", nil, false
+	}
+	u, err := url.Parse(fields[1])
+	if err != nil || u.Scheme != "http" || u.Host == "" {
+		return "", nil, false
+	}
+	target = u.Host
+	if u.Port() == "" {
+		target = u.Host + ":80"
+	}
+	path := u.RequestURI()
+	if path == "" || path[0] == '?' {
+		path = "/" + path
+	}
+	rest := string(head[lineEnd+2:]) // headers, terminator, any body (request-line CRLF already re-emitted)
+	hasHost := false
+	for _, ln := range strings.Split(rest, "\r\n") {
+		if strings.HasPrefix(strings.ToLower(ln), "host:") {
+			hasHost = true
+			break
+		}
+	}
+	var b bytes.Buffer
+	b.WriteString(fields[0])
+	b.WriteByte(' ')
+	b.WriteString(path)
+	b.WriteByte(' ')
+	b.WriteString(fields[2])
+	b.WriteString("\r\n")
+	if !hasHost {
+		b.WriteString("Host: ")
+		b.WriteString(u.Host)
+		b.WriteString("\r\n")
+	}
+	b.WriteString(rest)
+	return target, b.Bytes(), true
 }
 
 // handleSOCKS5 implements the no-auth SOCKS5 CONNECT flow.

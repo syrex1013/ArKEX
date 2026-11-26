@@ -19,6 +19,10 @@ const (
 	TaskArchiveFormatVersion       = 3
 	TaskArchiveLegacyFormatVersion = 1
 	TaskArchiveLLMRecordsPath      = "database/llm_records.ndjson"
+	// TaskArchiveAgentEventsPath carries agent_events. Production tasks reached
+	// 130k+ rows of lifecycle events, so the table is streamed like llm_records
+	// instead of being materialised into manifest.json.
+	TaskArchiveAgentEventsPath = "database/agent_events.ndjson"
 )
 
 func IsTaskArchiveFormatSupported(version int) bool {
@@ -144,6 +148,29 @@ type TaskArchiveSnapshot struct {
 	StreamedTables    map[string]string          `json:"streamed_tables,omitempty"`
 	DataCounts        map[string]int64           `json:"data_counts"`
 	AggregateStats    map[string]any             `json:"aggregate_stats"`
+}
+
+// archiveStreamPaths is the only set of tables allowed to leave manifest.json.
+// The package path is part of the format: a restore refuses a manifest that
+// points a streamed table anywhere else.
+var archiveStreamPaths = map[string]string{
+	"llm_records":  TaskArchiveLLMRecordsPath,
+	"agent_events": TaskArchiveAgentEventsPath,
+}
+
+// TaskArchiveStreamWriters receives the tables too large to hold in memory. A nil
+// writer keeps that table in manifest.json, which is how older callers (and small
+// tasks) keep working; a writer moves it to its own package file.
+type TaskArchiveStreamWriters struct {
+	LLMRecords  io.Writer
+	AgentEvents io.Writer
+}
+
+// TaskArchiveStreamReaders is the matching set a restore consumes. Every table the
+// manifest lists in StreamedTables needs its reader.
+type TaskArchiveStreamReaders struct {
+	LLMRecords  io.Reader
+	AgentEvents io.Reader
 }
 
 func scanTaskArchive(sc interface{ Scan(...any) error }) (*TaskArchive, error) {
@@ -558,7 +585,7 @@ UNION SELECT value::bigint FROM findings finding
 // writes are already quiescent at the server barrier; repeatable-read also keeps
 // the asset and accounting views mutually consistent during serialization.
 func (d *DB) SnapshotTaskArchive(taskID int64) (*TaskArchiveSnapshot, error) {
-	return d.snapshotTaskArchive(taskID, nil)
+	return d.snapshotTaskArchive(taskID, TaskArchiveStreamWriters{})
 }
 
 // SnapshotTaskArchiveWithLLMRecords streams the heavyweight record history to
@@ -568,10 +595,36 @@ func (d *DB) SnapshotTaskArchiveWithLLMRecords(taskID int64, llmRecords io.Write
 	if llmRecords == nil {
 		return nil, errors.New("nil LLM record archive writer")
 	}
-	return d.snapshotTaskArchive(taskID, llmRecords)
+	return d.snapshotTaskArchive(taskID, TaskArchiveStreamWriters{LLMRecords: llmRecords})
 }
 
-func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchiveSnapshot, error) {
+// SnapshotTaskArchiveWithStreams streams every heavyweight table archiveStreamPaths
+// allows to its own writer: llm_records and agent_events. A nil writer keeps that
+// table in manifest.json instead, so a small task costs no extra package file.
+func (d *DB) SnapshotTaskArchiveWithStreams(taskID int64, streams TaskArchiveStreamWriters) (*TaskArchiveSnapshot, error) {
+	return d.snapshotTaskArchive(taskID, streams)
+}
+
+// archiveStreamWriter returns the writer for a streamable table, or false when the
+// table must stay in manifest.json (not streamable, or no writer supplied).
+func archiveStreamWriter(table string, streams TaskArchiveStreamWriters) (io.Writer, bool) {
+	if archiveStreamPaths[table] == "" {
+		return nil, false
+	}
+	var writer io.Writer
+	switch table {
+	case "llm_records":
+		writer = streams.LLMRecords
+	case "agent_events":
+		writer = streams.AgentEvents
+	}
+	if writer == nil {
+		return nil, false
+	}
+	return writer, true
+}
+
+func (d *DB) snapshotTaskArchive(taskID int64, streams TaskArchiveStreamWriters) (*TaskArchiveSnapshot, error) {
 	tx, err := d.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -598,6 +651,7 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		{"exploration_nodes", `SELECT * FROM exploration_nodes WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
 		{"exploration_edges", `SELECT * FROM exploration_edges WHERE exploration_id=$1 ORDER BY src_id,dst_id`, []any{expID}},
 		{"exploration_anchors", `SELECT anchor.* FROM exploration_anchors anchor JOIN exploration_nodes node ON node.id=anchor.node_id WHERE node.exploration_id=$1 ORDER BY node_id,asset_id`, []any{expID}},
+		{"intent_checkpoints", `SELECT cp.* FROM intent_checkpoints cp JOIN exploration_nodes node ON node.id=cp.intent_id WHERE node.exploration_id=$1 ORDER BY cp.id`, []any{expID}},
 		{"task_constraints", `SELECT * FROM task_constraints WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
 		{"activity", `SELECT * FROM activity WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
 		{"task_relations", `SELECT * FROM task_relations WHERE task_id=$1 ORDER BY created_at,source_task_id`, []any{taskID}},
@@ -605,6 +659,9 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		{"task_llm_profiles", `SELECT * FROM task_llm_profiles WHERE task_id=$1 ORDER BY position`, []any{taskID}},
 		{"task_scope", `SELECT * FROM task_scope WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"findings", `SELECT * FROM findings WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		// Retest verdicts feed the task outcome card; without them a restore
+		// reports a task whose findings were never revalidated.
+		{"finding_retests", `SELECT r.* FROM finding_retests r JOIN findings f ON f.id=r.finding_id WHERE f.task_id=$1 ORDER BY r.finding_id,r.id`, []any{taskID}},
 		{"finding_traffic_bindings", `SELECT b.* FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE f.task_id=$1 ORDER BY b.finding_id,b.position,b.id`, []any{taskID}},
 		{"traffic_evidence_snapshots", `SELECT s.* FROM traffic_evidence_snapshots s WHERE EXISTS(SELECT 1 FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE b.snapshot_id=s.id AND f.task_id=$1) ORDER BY s.id`, []any{taskID}},
 		{"llm_records", `SELECT * FROM llm_records WHERE COALESCE(task_id,'')=$1 ORDER BY id`, []any{strconv.FormatInt(taskID, 10)}},
@@ -614,19 +671,42 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		{"intercept_pending", `SELECT * FROM intercept_pending WHERE COALESCE(task_id,'')=$1 ORDER BY id`, []any{strconv.FormatInt(taskID, 10)}},
 		{"side_question_sessions", `SELECT * FROM side_question_sessions WHERE task_id=$1 ORDER BY session_key`, []any{taskID}},
 		{"side_question_requests", `SELECT r.* FROM side_question_requests r JOIN side_question_sessions s ON s.session_key=r.session_key WHERE s.task_id=$1 ORDER BY r.ordinal`, []any{taskID}},
+		// Long-horizon swarm state (migrations 0020/0021/0022). Without it an
+		// archived task loses its attack paths, coverage ledger and project
+		// knowledge, so a months-later restore comes back amnesiac.
+		{"discovery_events", `SELECT * FROM discovery_events WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"attack_paths", `SELECT * FROM attack_paths WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"attack_path_steps", `SELECT step.* FROM attack_path_steps step
+JOIN attack_paths path ON path.id=step.path_id
+WHERE path.task_id=$1 ORDER BY step.path_id,step.position`, []any{taskID}},
+		{"chain_cursor", `SELECT * FROM chain_cursor WHERE task_id=$1`, []any{taskID}},
+		{"coverage_ledger", `SELECT * FROM coverage_ledger WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		// coverage_ledger_history carries task_id itself; the older coverage_id
+		// scoping cannot be used because that column never existed.
+		{"coverage_ledger_history", `SELECT * FROM coverage_ledger_history WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"rsi_lesson_usage", `SELECT * FROM rsi_lesson_usage WHERE task_id=$1 ORDER BY lesson_id,mode`, []any{taskID}},
+		{"task_intercept_rules", `SELECT * FROM task_intercept_rules WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"knowledge_injections", `SELECT * FROM knowledge_injections WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"knowledge_items", `SELECT * FROM knowledge_items WHERE source_task_id=$1
+   OR scope_engagement_id IN (SELECT engagement_id FROM tasks WHERE id=$1 AND engagement_id IS NOT NULL)
+ORDER BY id`, []any{taskID}},
+		{"knowledge_item_sources", `SELECT * FROM knowledge_item_sources
+WHERE item_id IN (SELECT id FROM knowledge_items WHERE source_task_id=$1)
+ORDER BY item_id,source_kind,source_id`, []any{taskID}},
+		{"agent_events", `SELECT * FROM agent_events WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"assets", `SELECT asset.* FROM assets asset WHERE asset.id IN (` + archiveAssetIDsQuery() + `) ORDER BY asset.id`, []any{taskID, expID}},
 	}
 	counts := make(map[string]int64, len(queries))
 	streamedTables := map[string]string{}
 	for _, query := range queries {
-		if query.name == "llm_records" && llmRecords != nil {
-			count, err := streamArchiveRows(tx, llmRecords, query.query, query.args...)
+		if writer, ok := archiveStreamWriter(query.name, streams); ok {
+			count, err := streamArchiveRows(tx, writer, query.query, query.args...)
 			if err != nil {
 				return nil, fmt.Errorf("snapshot %s: %w", query.name, err)
 			}
 			tables[query.name] = json.RawMessage("[]")
 			counts[query.name] = count
-			streamedTables[query.name] = TaskArchiveLLMRecordsPath
+			streamedTables[query.name] = archiveStreamPaths[query.name]
 			continue
 		}
 		raw, count, err := queryArchiveRows(tx, query.query, query.args...)

@@ -1,80 +1,131 @@
 /*
-label: ThreatVector
-value: threatvector
+  label: ThreatVector
+  value: threatvector
+  Aesthetic: adversarial command center. Ink-on-paper light, near-black dark.
+  Hairline structure, sharp corners, signal red reserved for intent.
 */
-
-/* ARKEX_V2_CODING_PROMPT.md §4 — stark red & white command center. */
-
 :root[data-theme-preset="threatvector"] {
-  --radius: 0.25rem;
-  --background: #ffffff;
-  --foreground: #212529;
+  --radius: 0.125rem;
+
+  --background: #fbfbfa;
+  --foreground: #101112;
   --card: #ffffff;
-  --card-foreground: #212529;
+  --card-foreground: #101112;
   --popover: #ffffff;
-  --popover-foreground: #212529;
-  --primary: #ff0000;
+  --popover-foreground: #101112;
+
+  --primary: #d40511;
   --primary-foreground: #ffffff;
-  --secondary: #f8f9fa;
-  --secondary-foreground: #212529;
-  --muted: #f8f9fa;
-  --muted-foreground: #6c757d;
-  --accent: #f8f9fa;
-  --accent-foreground: #212529;
-  --destructive: #dc3545;
-  --border: #e5e7eb;
-  --input: #e5e7eb;
-  --ring: #ff0000;
-  --chart-1: #ff0000;
-  --chart-2: #212529;
-  --chart-3: #dc3545;
-  --chart-4: #198754;
-  --chart-5: #0d6efd;
-  --sidebar: #ffffff;
-  --sidebar-foreground: #212529;
-  --sidebar-primary: #ff0000;
+
+  --secondary: #f1f1ee;
+  --secondary-foreground: #1c1d1f;
+  --muted: #f1f1ee;
+  --muted-foreground: #6a6d70;
+  --accent: #ebeae6;
+  --accent-foreground: #101112;
+
+  --destructive: #c1121f;
+  --border: #e3e2dd;
+  --input: #d8d7d1;
+  --ring: #d40511;
+
+  --surface-1: #ffffff;
+  --surface-2: #f6f6f3;
+  --surface-3: #edede8;
+  --hairline: #e3e2dd;
+  --hairline-strong: #c9c8c1;
+
+  --success: #147d55;
+  --success-foreground: #ffffff;
+  --warning: #a86500;
+  --warning-foreground: #ffffff;
+  --info: #1d4ed8;
+  --info-foreground: #ffffff;
+
+  --chart-1: #d40511;
+  --chart-2: #3f4448;
+  --chart-3: #a86500;
+  --chart-4: #147d55;
+  --chart-5: #1d4ed8;
+
+  --sidebar: #f6f6f3;
+  --sidebar-foreground: #1c1d1f;
+  --sidebar-primary: #d40511;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #f8f9fa;
-  --sidebar-accent-foreground: #212529;
-  --sidebar-border: #e5e7eb;
-  --sidebar-ring: #ff0000;
-  --shadow: none;
+  --sidebar-accent: #e8e7e2;
+  --sidebar-accent-foreground: #101112;
+  --sidebar-border: #e0dfd9;
+  --sidebar-ring: #d40511;
+
+  --shadow-xs: 0 1px 0 0 rgb(16 17 18 / 0.04);
+  --shadow-sm: 0 1px 2px 0 rgb(16 17 18 / 0.06);
+  --shadow-md: 0 2px 6px -1px rgb(16 17 18 / 0.08);
+  --shadow-lg: 0 8px 24px -8px rgb(16 17 18 / 0.14);
+  --shadow-xl: 0 16px 48px -12px rgb(16 17 18 / 0.18);
+}
+
+.dark:root[data-theme-preset="threatvector"] {
+  --radius: 0.125rem;
+
+  --background: #08090a;
+  --foreground: #e9e7e4;
+  --card: #0f1012;
+  --card-foreground: #e9e7e4;
+  --popover: #121315;
+  --popover-foreground: #e9e7e4;
+
+  --primary: #ff3b2f;
+  --primary-foreground: #0a0a0a;
+
+  --secondary: #17181a;
+  --secondary-foreground: #e9e7e4;
+  --muted: #16171a;
+  --muted-foreground: #8b9096;
+  --accent: #1c1e21;
+  --accent-foreground: #f2f0ed;
+
+  --destructive: #ff6b60;
+  --border: #222427;
+  --input: #2a2d31;
+  --ring: #ff3b2f;
+
+  --surface-1: #0f1012;
+  --surface-2: #141518;
+  --surface-3: #1a1c1f;
+  --hairline: #222427;
+  --hairline-strong: #34383d;
+
+  --success: #2fd39a;
+  --success-foreground: #04120c;
+  --warning: #ffb224;
+  --warning-foreground: #170f00;
+  --info: #5ba7ff;
+  --info-foreground: #04101f;
+
+  --chart-1: #ff3b2f;
+  --chart-2: #9aa3ab;
+  --chart-3: #ffb224;
+  --chart-4: #2fd39a;
+  --chart-5: #5ba7ff;
+
+  --sidebar: #0b0c0e;
+  --sidebar-foreground: #d8d6d2;
+  --sidebar-primary: #ff3b2f;
+  --sidebar-primary-foreground: #0a0a0a;
+  --sidebar-accent: #16181b;
+  --sidebar-accent-foreground: #f2f0ed;
+  --sidebar-border: #1d1f22;
+  --sidebar-ring: #ff3b2f;
+
+  --shadow-xs: none;
   --shadow-sm: none;
   --shadow-md: none;
   --shadow-lg: none;
   --shadow-xl: none;
 }
 
-.dark:root[data-theme-preset="threatvector"] {
-  --background: #0a0a0a;
-  --foreground: #e5e2e1;
-  --card: #141414;
-  --card-foreground: #e5e2e1;
-  --popover: #141414;
-  --popover-foreground: #e5e2e1;
-  --primary: #ff0000;
-  --primary-foreground: #ffffff;
-  --secondary: #1c1b1b;
-  --secondary-foreground: #e5e2e1;
-  --muted: #1c1b1b;
-  --muted-foreground: #9aa0a6;
-  --accent: #1c1b1b;
-  --accent-foreground: #e5e2e1;
-  --destructive: #ffb4ab;
-  --border: #2a2a2a;
-  --input: #2a2a2a;
-  --ring: #ff0000;
-  --chart-1: #ff0000;
-  --chart-2: #e5e2e1;
-  --chart-3: #dc3545;
-  --chart-4: #198754;
-  --chart-5: #0d6efd;
-  --sidebar: #141414;
-  --sidebar-foreground: #e5e2e1;
-  --sidebar-primary: #ff0000;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #1c1b1b;
-  --sidebar-accent-foreground: #e5e2e1;
-  --sidebar-border: #2a2a2a;
-  --sidebar-ring: #ff0000;
+/* ThreatVector reads as a terminal instrument: labels are micro-caps. */
+:root[data-theme-preset="threatvector"] {
+  --font-sans: var(--font-geist);
+  --font-heading: var(--font-geist);
 }

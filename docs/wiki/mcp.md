@@ -70,7 +70,7 @@ Both are threaded into every connect path:
 
 | Transport | What receives it |
 | --- | --- |
-| stdio | `stdioEnvWithProxy` sets `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` (+ lowercase), `NODE_USE_ENV_PROXY=1`, and `NODE_EXTRA_CA_CERTS` + `SSL_CERT_FILE` when a CA exists |
+| stdio | `stdioEnvWithProxy` sets `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` (+ lowercase), `NODE_USE_ENV_PROXY=1`, and `NODE_EXTRA_CA_CERTS` + `SSL_CERT_FILE` when a CA exists; a `socks5://` proxy URL is never injected — Node's undici `EnvHttpProxyAgent` crashes the process on it ("connection closed") |
 | http / sse | `proxyTransport` sets `tr.Proxy` and appends the CA PEM to the system root pool |
 
 **A missing CA is the classic failure.** The recording proxy re-signs every certificate, so an

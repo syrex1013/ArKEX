@@ -1090,7 +1090,7 @@ type ExchangeMeta struct {
 	RespLen     int    `json:"resp_len"`
 	Path        string `json:"path"`
 	Rewritten   bool   `json:"rewritten"`
-	Via         string `json:"via"`   // 'proxy' (MITM) | 'external' (ingested); '' = recorded before this column existed
+	Via         string `json:"via"`    // 'proxy' (MITM) | 'external' (ingested); '' = recorded before this column existed
 	Egress      string `json:"egress"` // capture-time egress: 'tunneled' | 'proxied:<host>' | 'direct'; '' = unknown
 }
 
@@ -1247,7 +1247,7 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 				args = append(args, domain, "%."+domain)
 				conds = append(conds, "(host = ? OR host LIKE ?)")
 			}
-			add("("+strings.Join(conds, " OR ")+")")
+			add("(" + strings.Join(conds, " OR ") + ")")
 		}
 	}
 	if m := strings.TrimSpace(f.Method); m != "" {

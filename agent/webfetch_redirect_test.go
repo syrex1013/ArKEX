@@ -105,7 +105,8 @@ func fetchInputJSON(u string) string {
 // hooks never check it here, and the pinned dialer (step 2.1) connects only to
 // a pinned target.
 func TestWebFetchRedirectCheckWiredOnEveryAgentKind(t *testing.T) {
-	for _, kind := range []string{"worker", "planner", "mainagent", "chat"} {
+	// mainagent deliberately has no WebFetch (must dispatch workers instead).
+	for _, kind := range []string{"worker", "planner", "chat"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newHookReachFixture(t)
 			d := testDB(t)
@@ -131,11 +132,6 @@ func TestWebFetchRedirectCheckWiredOnEveryAgentKind(t *testing.T) {
 			case "planner":
 				p := NewPlanner(prov, "test-model", f.workDir, nil, 0, 3)
 				if _, _, err := p.Plan(ctx, f.expID, nil, f.ts, "probe goal", nil, passHooks{}, nil); err != nil {
-					t.Fatal(err)
-				}
-			case "mainagent":
-				m := NewMainAgent(prov, "test-model", f.workDir, nil, 0, 3)
-				if _, err := m.Chat(ctx, f.expID, 0, nil, f.ts, "probe goal", "status?", passHooks{}, nil, nil, nil, nil, nil); err != nil {
 					t.Fatal(err)
 				}
 			case "chat":

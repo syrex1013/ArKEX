@@ -206,6 +206,7 @@ func TestChatResumesSignedThinkingHistory(t *testing.T) {
 
 // sessionFixture is one exploration with one intent on the test database.
 type sessionFixture struct {
+	taskID   int64
 	expID    int64
 	intentID int64
 	ts       *db.ExplorationStore
@@ -216,11 +217,12 @@ func newSessionFixture(t *testing.T) sessionFixture {
 	t.Helper()
 	d := testDB(t)
 	t.Cleanup(func() { _ = d.Close() })
-	expID, err := d.CreateExploration("session identity probe", "keep the session id stable")
+	task, err := d.CreateTask("session identity probe", "keep the session id stable", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, expID) })
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM tasks WHERE id=$1`, task.ID) })
+	expID := task.ExplorationID
 	ts := d.Exploration(expID)
 	payload := map[string]any{"summary": "session probe"}
 	intentID, err := ts.AddNode("intent", payload, 0, "running", "planner", nil)
@@ -228,7 +230,7 @@ func newSessionFixture(t *testing.T) sessionFixture {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(payload)
-	return sessionFixture{expID: expID, intentID: intentID, ts: ts, intent: &db.Node{ID: intentID, Payload: raw}}
+	return sessionFixture{taskID: task.ID, expID: expID, intentID: intentID, ts: ts, intent: &db.Node{ID: intentID, Payload: raw}}
 }
 
 // run drives one agent kind once and returns the session id it should use.

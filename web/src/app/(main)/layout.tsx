@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import * as React from "react";
 
 import { AppSidebar } from "@/app/(main)/_components/sidebar/app-sidebar";
+import { LiveStreamProvider } from "@/components/arkex/live-stream-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { auth } from "@/lib/auth";
 import { getClientCookie } from "@/lib/cookie.client";
@@ -79,7 +80,9 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           "min-w-0 overflow-x-clip",
         )}
       >
-        <MainContent>{children}</MainContent>
+        <LiveStreamProvider>
+          <MainContent>{children}</MainContent>
+        </LiveStreamProvider>
       </SidebarInset>
     </SidebarProvider>
   );

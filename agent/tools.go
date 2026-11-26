@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -138,6 +139,7 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[
 // One ToolSet is created per planner/worker run; per-run signals live here.
 type ToolSet struct {
 	findingRecorder FindingRecorder
+	discovery       func(DiscoveryItem)
 	as              *db.AssetStore   // asset store (optional; nil = asset tools not available)
 	cs              *db.CompanyStore // company store (optional)
 	ts              *db.ExplorationStore
@@ -225,6 +227,21 @@ func (t *ToolSet) SetNotify(fn func()) { t.notify = fn }
 
 // SetNotifyFinding wires the finding-wake callback (see ToolSet.notifyFinding).
 func (t *ToolSet) SetNotifyFinding(fn func(int64, string)) { t.notifyFinding = fn }
+
+// SetDiscovery installs the sink that publishes a run's discoveries to the
+// task's peers and the chain agent.
+func (t *ToolSet) SetDiscovery(fn func(DiscoveryItem)) { t.discovery = fn }
+
+// emitDiscovery hands one discovery to the sink with this run's identity filled
+// in. A nil sink is a no-op.
+func (t *ToolSet) emitDiscovery(kind, summary string, nodeID int64) {
+	if t.discovery == nil {
+		return
+	}
+	agentName := t.worker
+	it := DiscoveryItem{Kind: kind, Summary: summary, NodeID: nodeID, IntentID: t.ownerNode, Agent: agentName}
+	t.discovery(it)
+}
 
 // EnrichTrigger is the enrichment engine seen from the tool layer (see package
 // enrich). Kept as an interface here to avoid coupling agent → enrich.
@@ -692,6 +709,35 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		out["task_credentials"] = creds
 		out["task_credentials_note"] = "test accounts for this task; use the matching entry for authenticated testing instead of registering a new account; entries with an empty password mean you must register that account first (strong unique password) and record it via save_task_credential; ALWAYS record accounts you register via save_task_credential"
 	}
+	// attack paths (long-horizon swarm): the chain agent's scored chains. A path
+	// with a proposed step is queued work — when one exists, promoting its next
+	// step outranks generic exploration, so the planner sees the best few every
+	// round with their next proposed step spelled out.
+	if ds := t.ts.DB(); ds != nil {
+		taskID := t.taskID
+		if taskID <= 0 {
+			taskID, _ = t.ts.TaskID()
+		}
+		if taskID > 0 {
+			paths, err := ds.ListAttackPaths(taskID, []string{db.PathStateProposed, db.PathStateValidating, db.PathStateValidated}, 5)
+			if err == nil && len(paths) > 0 {
+				aps := make([]map[string]any, 0, len(paths))
+				for _, p := range paths {
+					m := map[string]any{"id": p.ID, "title": p.Title, "score": p.Score, "state": p.State}
+					if _, steps, serr := ds.GetAttackPath(p.ID); serr == nil {
+						for _, s := range steps {
+							if s.Status == db.StepStatusProposed && s.RefExists {
+								m["next_step"] = fmt.Sprintf("step %d: %s -> %s (%s #%d via %s)", s.Position, s.Precondition, s.Postcondition, s.Kind, s.RefID, s.Edge)
+								break
+							}
+						}
+					}
+					aps = append(aps, m)
+				}
+				out["attack_paths"] = aps
+			}
+		}
+	}
 	return out
 }
 
@@ -1051,6 +1097,9 @@ func compactFinding(n *db.Node) map[string]any {
 	if st, ok := p["status"]; ok && st != nil && st != "" {
 		m["status"] = st
 	}
+	if n.FindingConfidence > 0 {
+		m["confidence"] = n.FindingConfidence
+	}
 	return m
 }
 
@@ -1063,12 +1112,29 @@ func (t *ToolSet) listFindings() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			intentOf, _ := t.ts.FindingIntentsWithSources() // finding id -> the intent id that produced it
+			ids := make([]int64, 0, len(f))
+			for _, n := range f {
+				if n.FindingID > 0 {
+					ids = append(ids, n.FindingID)
+				}
+			}
+			conf, _ := t.ts.FindingConfidences(ids)
+			sort.SliceStable(f, func(i, j int) bool {
+				ci, cj := conf[f[i].FindingID], conf[f[j].FindingID]
+				if ci != cj {
+					return ci > cj
+				}
+				return f[i].CreatedAt.After(f[j].CreatedAt)
+			})
 			taskID := t.taskID
 			if taskID <= 0 {
 				taskID, _ = t.ts.TaskID()
 			}
 			out := make([]map[string]any, 0, len(f))
 			for _, n := range f {
+				if c, ok := conf[n.FindingID]; ok {
+					n.FindingConfidence = c
+				}
 				m := compactFinding(n)
 				if n.FindingID > 0 {
 					m["finding_id"], m["finding_node_id"], m["traffic_count"] = n.FindingID, n.ID, n.TrafficCount
@@ -1080,6 +1146,14 @@ func (t *ToolSet) listFindings() actool.CoreTool {
 				}
 				if iid, ok := intentOf[n.ID]; ok {
 					m["intent_id"] = iid
+				}
+				// attack paths referencing this finding: lets the planner/chain see
+				// which chains already consume the finding (and that a new chain on
+				// the same finding is a duplicate, not new direction).
+				if !n.Inherited && n.FindingID > 0 && t.ts.DB() != nil {
+					if pids, err := t.ts.DB().PathForFinding(n.FindingID); err == nil && len(pids) > 0 {
+						m["paths"] = pids
+					}
 				}
 				out = append(out, m)
 			}
@@ -1192,6 +1266,7 @@ type intentItem struct {
 	AssetIDs  []json.RawMessage `json:"asset_ids"`
 	ParentIDs []json.RawMessage `json:"parent_ids"`
 	Priority  int               `json:"priority"`
+	Role      string            `json:"role"`
 }
 
 // addOneIntent creates one intent node, links its upstream lineage, and returns the id.
@@ -1236,9 +1311,16 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 			return 0, fmt.Errorf("%s", b.String())
 		}
 	}
+	role := strings.TrimSpace(it.Role)
+	if role != "" && !db.ValidAgentRole(role) && role != db.AgentRoleChain {
+		return 0, fmt.Errorf("role must be one of recon, web, api, exploit, verify, general (got %q)", role)
+	}
 	payload := map[string]any{"summary": it.Summary}
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
+	}
+	if role != "" {
+		payload["role"] = role
 	}
 	id, err := t.ts.AddIntent(payload, priority, anchors, "planner")
 	if err != nil {
@@ -1269,6 +1351,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "the [target asset ids] this direction tests/attacks (**pass whenever possible**, 0/1/many; these are asset ids from list_assets, not exploration node ids): which assets (sites/endpoints/parameters/hosts etc.) this direction targets. Whenever the direction revolves around concrete assets, be sure to pass them — it is the structured marker of 'which targets this exploration hits', used for coverage dedup and linking the intent into the asset lineage. Leave empty only for pure global recon with truly no concrete target assets."},
 			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "upstream anchor ids (optional, 0/1/many): which [confirmed fact/finding] nodes this direction is synthesized from. **Only existing fact/finding node ids may be passed — not intents/goals/hints** — an intent must anchor on confirmed knowledge, finding-driven rather than planned out of thin air. Pass several when multiple facts jointly produce one new intent; leave empty for a top-level brand-new recon direction (it is automatically attached to the task's origin fact)."},
 			"priority":   intp("priority 0-10, default 5"),
+			"role":       str("optional specialist role the direction needs: recon | web | api | exploit | verify | general; empty = any agent"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -1490,6 +1573,9 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			t.notify()
 		}
 		t.writes.Findings++
+		if !recorded.Merged {
+			t.emitDiscovery("finding", a.Summary, recorded.NodeID)
+		}
 		// Keep the first line's node-ID contract for existing reporter triggers.
 		for i := range recorded.Traffic.Bindings {
 			recorded.Traffic.Bindings[i].Snapshot.ReqHead = ""
@@ -1500,7 +1586,10 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			EvidenceStatus string `json:"evidence_status"`
 			EvidenceNote   string `json:"evidence_note,omitempty"`
 		}{RecordedFinding: recorded, EvidenceStatus: "bound"}
-		if len(recorded.Traffic.Bindings) == 0 {
+		if recorded.Merged {
+			result.EvidenceStatus = "merged"
+			result.EvidenceNote = "Same defect as an existing finding; evidence bindings were merged into it — do not report it again."
+		} else if len(recorded.Traffic.Bindings) == 0 {
 			result.EvidenceStatus = "not_bound"
 			result.EvidenceNote = "Finding saved without bound traffic. TCP/no-packet cases can proceed normally; if you already have verified HTTP traffic, bind it via the available bind_finding_traffic or the findings page before finishing the evidence handover. Do not create the finding again."
 			if !findingTrafficBindingEnabled() {
@@ -1601,6 +1690,7 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 		_ = t.ts.Link(intent, db.RelYields, id) // chain: intent -> fact
 	}
 	t.writes.Facts++
+	t.emitDiscovery("fact", it.Summary, id)
 	return id, nil
 }
 
@@ -2322,5 +2412,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// list_untested_assets: query untested assets in this task's scope on demand
 		// (by type + paginated), and decide on supplementary testing yourself.
 		t.listUntestedAssets(),
+		// project knowledge: reuse durable facts of earlier runs, and write new ones.
+		t.rememberKnowledge(), t.searchKnowledge(),
 	}
 }

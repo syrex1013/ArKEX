@@ -4,15 +4,17 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import { usePathname } from "next/navigation";
 
-import { X } from "lucide-react";
+import { ChevronRight, X } from "lucide-react";
 
-import { Separator } from "@/components/ui/separator";
+import { ConnectionIndicator } from "@/components/arkex/connection-indicator";
+import { useLiveLog } from "@/components/arkex/live-stream-provider";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { t } from "@/i18n";
 import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { cn } from "@/lib/utils";
+import { resolveActiveRoute } from "@/navigation/sidebar/active-route";
 
 import { AccountSwitcher } from "./sidebar/account-switcher";
 import { LayoutControls } from "./sidebar/layout-controls";
@@ -38,9 +40,27 @@ function isFullBleed(pathname: string) {
 const RELEASES_URL = "https://github.com/BaaRai/ARTEX/releases";
 const UPDATE_DISMISSED_KEY = "artex-update-dismissed";
 
+function PageCrumb() {
+  const pathname = usePathname();
+  const active = resolveActiveRoute(pathname);
+
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      {active?.group && (
+        <>
+          <span className="label-micro hidden text-muted-foreground md:inline">{active.group}</span>
+          <ChevronRight className="hidden size-3 shrink-0 text-hairline-strong md:block" aria-hidden />
+        </>
+      )}
+      <span className="truncate font-medium text-[0.8125rem] tracking-tight">{active?.title ?? "Console"}</span>
+    </div>
+  );
+}
+
 export function MainContent({ children }: { children: ReactNode }) {
   const currentUser = useCurrentUser();
   const pathname = usePathname();
+  const log = useLiveLog();
   const [version, setVersion] = useState("");
   // Only set when the backend has the opt-in update check on (ARTEX_UPDATE_CHECK) and found a newer release.
   const [latest, setLatest] = useState("");
@@ -57,7 +77,7 @@ export function MainContent({ children }: { children: ReactNode }) {
   }, []);
 
   const updateBanner = latest ? (
-    <div className="flex shrink-0 items-center justify-center gap-2 border-b bg-muted/50 px-4 py-1 text-xs">
+    <div className="flex shrink-0 items-center justify-center gap-2 border-hairline border-b bg-surface-2 px-4 py-1 text-xs">
       <a href={RELEASES_URL} target="_blank" rel="noreferrer" className="underline-offset-2 hover:underline">
         {t("ARTEX {version} is available. See the release notes.", { version: latest })}
       </a>
@@ -89,26 +109,35 @@ export function MainContent({ children }: { children: ReactNode }) {
       {updateBanner}
       <header
         className={cn(
-          "sticky top-0 z-50 flex h-12 shrink-0 items-center gap-2 border-b bg-background transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12",
-          "[html[data-navbar-style=sticky]_&]:sticky [html[data-navbar-style=sticky]_&]:top-0 [html[data-navbar-style=sticky]_&]:z-50 [html[data-navbar-style=sticky]_&]:overflow-hidden [html[data-navbar-style=sticky]_&]:rounded-t-[inherit] [html[data-navbar-style=sticky]_&]:bg-background/50 [html[data-navbar-style=sticky]_&]:backdrop-blur-md",
+          "sticky top-0 z-50 flex h-12 shrink-0 items-center border-hairline border-b bg-background/85 backdrop-blur-sm",
+          "[html[data-navbar-style=sticky]_&]:sticky [html[data-navbar-style=sticky]_&]:top-0 [html[data-navbar-style=sticky]_&]:z-50 [html[data-navbar-style=sticky]_&]:overflow-hidden [html[data-navbar-style=sticky]_&]:rounded-t-[inherit] [html[data-navbar-style=sticky]_&]:bg-background/60 [html[data-navbar-style=sticky]_&]:backdrop-blur-md",
         )}
       >
-        <div className="flex w-full items-center justify-between px-4 lg:px-6">
-          <div className="flex items-center gap-1 lg:gap-2">
-            <SidebarTrigger className="-ml-1" />
-            <Separator
-              orientation="vertical"
-              className="mx-2 data-[orientation=vertical]:h-4 data-[orientation=vertical]:self-center"
-            />
-            <SearchDialog />
+        <div className="flex w-full min-w-0 items-center gap-3 px-3 lg:px-5">
+          <div className="flex min-w-0 items-center gap-2">
+            <SidebarTrigger className="-ml-1 size-7" />
+            <span className="h-3.5 w-px shrink-0 bg-hairline-strong" aria-hidden />
+            <PageCrumb />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            <SearchDialog />
+            <ConnectionIndicator
+              feeds={[
+                {
+                  id: "logs",
+                  label: "Event stream",
+                  status: log.status,
+                  attempt: log.attempt,
+                  lastEventAt: log.lastEventAt,
+                },
+              ]}
+            />
             <MullvadIndicator />
-            {version && (
-              <span className="font-medium text-muted-foreground text-xs tabular-nums">
-                {t("Version · {version}", { version })}
+            {version ? (
+              <span className="hidden font-mono text-[0.6875rem] text-muted-foreground tabular-nums xl:inline">
+                v{version}
               </span>
-            )}
+            ) : null}
             <LayoutControls />
             <ThemeSwitcher />
             <AccountSwitcher users={[currentUser]} />

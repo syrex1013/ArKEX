@@ -139,12 +139,12 @@ func TestPlannerToolCallReachesHooks(t *testing.T) {
 func TestMainAgentToolCallReachesHooks(t *testing.T) {
 	f := newHookReachFixture(t)
 	hooks := &recordingHooks{}
-	main := NewMainAgent(toolCallThenStop("Bash", f.bash), "test-model", f.workDir, nil, 0, 3)
+	// Main agent has no Bash; graph_overview is always on its tool surface.
+	main := NewMainAgent(toolCallThenStop("graph_overview", `{}`), "test-model", f.workDir, nil, 0, 3)
 	if _, err := main.Chat(f.ctx, f.expID, 0, nil, f.ts, "probe goal", "status?", hooks, nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	hooks.assertOneScopedCall(t, "Bash", f.taskID)
-	f.assertToolDidNotRun(t)
+	hooks.assertOneScopedCall(t, "graph_overview", f.taskID)
 }
 
 func TestWorkerToolCallReachesHooks(t *testing.T) {

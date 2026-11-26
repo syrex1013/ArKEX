@@ -67,7 +67,7 @@ type PreferencePersistenceConfig = {
  */
 export const PREFERENCE_DEFAULTS: PreferenceValueMap = {
   theme_mode: "dark",
-  theme_preset: "silent-sentinel",
+  theme_preset: "threatvector",
   font: "inter",
   content_layout: "full-width",
   navbar_style: "sticky",

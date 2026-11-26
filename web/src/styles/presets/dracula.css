@@ -1,0 +1,130 @@
+/*
+  label: Dracula
+  value: dracula
+  Official Dracula palette (dark) and its Alucard counterpart (light).
+  Deep violet-grey surfaces, high-chroma accents, soft structure.
+*/
+:root[data-theme-preset="dracula"] {
+  --radius: 0.5rem;
+
+  --background: #fffbeb;
+  --foreground: #1f1f1f;
+  --card: #ffffff;
+  --card-foreground: #1f1f1f;
+  --popover: #ffffff;
+  --popover-foreground: #1f1f1f;
+
+  --primary: #644ac9;
+  --primary-foreground: #ffffff;
+
+  --secondary: #f2edda;
+  --secondary-foreground: #1f1f1f;
+  --muted: #f3eedb;
+  --muted-foreground: #6c664b;
+  --accent: #eae4cf;
+  --accent-foreground: #1f1f1f;
+
+  --destructive: #cb3a2a;
+  --border: #e0d9c2;
+  --input: #d5cdb4;
+  --ring: #644ac9;
+
+  --surface-1: #ffffff;
+  --surface-2: #faf5e4;
+  --surface-3: #f2edda;
+  --hairline: #e0d9c2;
+  --hairline-strong: #c8bfa4;
+
+  --success: #14710a;
+  --success-foreground: #ffffff;
+  --warning: #846e15;
+  --warning-foreground: #ffffff;
+  --info: #036a96;
+  --info-foreground: #ffffff;
+
+  --chart-1: #644ac9;
+  --chart-2: #a3144d;
+  --chart-3: #036a96;
+  --chart-4: #14710a;
+  --chart-5: #846e15;
+
+  --sidebar: #faf5e4;
+  --sidebar-foreground: #1f1f1f;
+  --sidebar-primary: #644ac9;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #efe9d6;
+  --sidebar-accent-foreground: #1f1f1f;
+  --sidebar-border: #e0d9c2;
+  --sidebar-ring: #644ac9;
+
+  --shadow-xs: 0 1px 1px 0 rgb(31 31 31 / 0.03);
+  --shadow-sm: 0 1px 3px 0 rgb(31 31 31 / 0.07);
+  --shadow-md: 0 4px 10px -2px rgb(31 31 31 / 0.09);
+  --shadow-lg: 0 12px 28px -10px rgb(31 31 31 / 0.16);
+  --shadow-xl: 0 24px 56px -16px rgb(31 31 31 / 0.2);
+}
+
+.dark:root[data-theme-preset="dracula"] {
+  --radius: 0.5rem;
+
+  --background: #282a36;
+  --foreground: #f8f8f2;
+  --card: #21222c;
+  --card-foreground: #f8f8f2;
+  --popover: #21222c;
+  --popover-foreground: #f8f8f2;
+
+  --primary: #bd93f9;
+  --primary-foreground: #21222c;
+
+  --secondary: #343746;
+  --secondary-foreground: #f8f8f2;
+  --muted: #2f3240;
+  --muted-foreground: #8f9bc4;
+  --accent: #383b4b;
+  --accent-foreground: #f8f8f2;
+
+  --destructive: #ff5555;
+  --border: #44475a;
+  --input: #4b4e63;
+  --ring: #bd93f9;
+
+  --surface-1: #21222c;
+  --surface-2: #282a36;
+  --surface-3: #343746;
+  --hairline: #3a3d4e;
+  --hairline-strong: #4d5168;
+
+  --success: #50fa7b;
+  --success-foreground: #0a1a0f;
+  --warning: #f1fa8c;
+  --warning-foreground: #1f2205;
+  --info: #8be9fd;
+  --info-foreground: #04222a;
+
+  --chart-1: #bd93f9;
+  --chart-2: #ff79c6;
+  --chart-3: #8be9fd;
+  --chart-4: #50fa7b;
+  --chart-5: #f1fa8c;
+
+  --sidebar: #21222c;
+  --sidebar-foreground: #e4e4dd;
+  --sidebar-primary: #bd93f9;
+  --sidebar-primary-foreground: #21222c;
+  --sidebar-accent: #343746;
+  --sidebar-accent-foreground: #f8f8f2;
+  --sidebar-border: #343746;
+  --sidebar-ring: #bd93f9;
+
+  --shadow-xs: none;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+  --shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.35);
+  --shadow-lg: 0 12px 32px -10px rgb(0 0 0 / 0.45);
+  --shadow-xl: 0 24px 64px -16px rgb(0 0 0 / 0.55);
+}
+
+:root[data-theme-preset="dracula"] {
+  --font-sans: var(--font-geist);
+  --font-heading: var(--font-geist);
+}

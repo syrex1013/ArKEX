@@ -304,10 +304,9 @@ func TestValidatePassword(t *testing.T) {
 		wantErr  bool
 	}{
 		{"empty", "", true},
-		{"eight chars, the old minimum", "12345678", true},
-		{"eleven chars", "12345678901", true},
-		{"twelve chars", "123456789012", false},
-		{"twelve multibyte chars counted as runes not bytes", strings.Repeat("€", 12), false},
+		{"nine chars, one under the minimum", "123456789", true},
+		{"ten chars, the minimum", "1234567890", false},
+		{"ten multibyte chars counted as runes not bytes", strings.Repeat("€", 10), false},
 		{"four chars reach 12 bytes but only 4 runes", strings.Repeat("€", 4), true},
 		{"72 bytes", strings.Repeat("a", 72), false},
 		{"73 bytes exceeds the bcrypt cap", strings.Repeat("a", 73), true},
