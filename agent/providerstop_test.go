@@ -45,7 +45,7 @@ func streamUnder(t *testing.T, ctx context.Context, stop string) {
 
 func TestIsRefusalStop(t *testing.T) {
 	for stop, want := range map[string]bool{
-		"refusal": true, "content_filter": true,
+		"refusal": true, "content_filter": true, "sensitive": true,
 		"end_turn": false, "tool_use": false, "max_tokens": false, "stop": false, "": false,
 	} {
 		if got := IsRefusalStop(stop); got != want {

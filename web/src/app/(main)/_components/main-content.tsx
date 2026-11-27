@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { resolveActiveRoute } from "@/navigation/sidebar/active-route";
 
 import { AccountSwitcher } from "./sidebar/account-switcher";
+import { DirectEgressToggle } from "./sidebar/direct-egress-toggle";
 import { LayoutControls } from "./sidebar/layout-controls";
 import { MullvadIndicator } from "./sidebar/mullvad-indicator";
 import { SearchDialog } from "./sidebar/search-dialog";
@@ -133,6 +134,7 @@ export function MainContent({ children }: { children: ReactNode }) {
               ]}
             />
             <MullvadIndicator />
+            <DirectEgressToggle />
             {version ? (
               <span className="hidden font-mono text-[0.6875rem] text-muted-foreground tabular-nums xl:inline">
                 v{version}

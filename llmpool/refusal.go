@@ -16,9 +16,13 @@ var ErrProviderRefusal = errors.New("LLM provider refusal")
 const refusalHead = 400
 
 // IsRefusalStopReason reports Anthropic/OpenAI-style refusal stop reasons.
+// "sensitive" is z.ai GLM's finish_reason when its content filter silently
+// blocks the completion: an empty delta with no usage and no error (observed on
+// planner prompts naming RCE/shell goals). Unrecognized stops end the run
+// normally, so the filter would stall a task forever without failover.
 func IsRefusalStopReason(stop string) bool {
 	switch strings.ToLower(strings.TrimSpace(stop)) {
-	case "refusal", "content_filter":
+	case "refusal", "content_filter", "sensitive":
 		return true
 	default:
 		return false

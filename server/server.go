@@ -4111,8 +4111,10 @@ func (s *Server) settingsPayload() map[string]any {
 		"mullvad_relay":           s.m.MullvadRelay(),
 		"mullvad_address":         s.m.MullvadAddress(),
 		"mullvad_mode":            s.m.MullvadMode(),
-		// Global WireGuard config route: secret masked when set, like the other
-		// *_set secrets; the UI sends "__masked__" back to keep it.
+		// Direct-egress override: on = Mullvad/global WG/global proxy bypassed,
+		// traffic dials the target straight from the server IP (capture still
+		// records when on).
+		"egress_direct":        s.m.EgressDirect(),
 		"global_wg_config":     maskedSecret(s.m.GlobalWGConfigText()),
 		"global_wg_config_set": s.m.GlobalWGConfigured(),
 		"global_wg_proxy_port": s.m.GlobalWGPort(),
@@ -4207,6 +4209,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		MullvadRelay    *string `json:"mullvad_relay"`
 		MullvadAddress  *string `json:"mullvad_address"` // tunnel interface IP (bare IPv4)
 		MullvadMode     *string `json:"mullvad_mode"`    // auto|kernel|netstack ("" = auto)
+		// Direct-egress override: on tears Mullvad + global WG down and bypasses
+		// the global proxy (stored values kept, restored on toggle-off); off
+		// re-arms the watchdogs, which rebuild stored tunnels within a tick.
+		EgressDirect    *bool   `json:"egress_direct"`
 		SliverConfigPth *string `json:"sliver_config_path"`
 		// Global WireGuard config route. GlobalWGConfig is a sealed secret:
 		// null/"__masked__" = keep, "" = clear; a non-empty value replaces the
@@ -4435,6 +4441,18 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
+		s.rebuildAgentsForEgressChange()
+	}
+	if req.EgressDirect != nil {
+		// SetEgressDirect applies the tunnel side effects (tear down / re-arm
+		// the watchdogs); here the runtime paths and agents follow the new
+		// resolution — the MITM upstream + sandbox env re-sync immediately and
+		// agents bake the effective proxy at build time → rebuild + SSE push.
+		if err := s.m.SetEgressDirect(*req.EgressDirect); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		s.m.syncWGProxyEgress()
 		s.rebuildAgentsForEgressChange()
 	}
 	if req.LLMRecord != nil {

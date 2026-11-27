@@ -387,6 +387,7 @@ func (s *Server) mullvadStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) egressPayload(ctx context.Context) map[string]any {
 	out := s.mullvadClient().Status()
 	out["mode_setting"] = s.m.MullvadMode()
+	out["egress_direct"] = s.m.EgressDirect()
 	proxy := s.m.EffectiveTaskProxyURL()
 	out["task_egress_blocked"] = proxy == blockedProxyURL
 	out["global_proxy_set"] = s.m.GlobalProxy() != ""
@@ -502,23 +503,29 @@ func probePublicEgress(ctx context.Context, proxy, caPath, endpoint string) publ
 	if proxy != "" {
 		proxyURL, err := url.Parse(proxy)
 		if err != nil || proxyURL.Host == "" {
+			log.Printf("[egress] probe %s: unusable proxy %q: %v", endpoint, proxyLabel(proxy), err)
 			return publicEgress{}
 		}
 		if proxyURL.Hostname() == "0.0.0.0" {
 			proxyURL.Host = "127.0.0.1:" + proxyURL.Port()
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
+	} else {
+		transport.Proxy = nil
 	}
 	if caPath != "" {
 		pem, err := os.ReadFile(caPath)
 		if err != nil {
+			log.Printf("[egress] probe %s: read CA %s: %v", endpoint, caPath, err)
 			return publicEgress{}
 		}
 		roots, err := x509.SystemCertPool()
 		if err != nil {
+			log.Printf("[egress] probe %s: system cert pool: %v", endpoint, err)
 			return publicEgress{}
 		}
 		if !roots.AppendCertsFromPEM(pem) {
+			log.Printf("[egress] probe %s: CA %s holds no certificates", endpoint, caPath)
 			return publicEgress{}
 		}
 		transport.TLSClientConfig = &tls.Config{RootCAs: roots}
@@ -530,21 +537,39 @@ func probePublicEgress(ctx context.Context, proxy, caPath, endpoint string) publ
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
+		log.Printf("[egress] probe %s: build request: %v", endpoint, err)
 		return publicEgress{}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		// The route is the thing under test, so a failed probe is the only
+		// signal that the tunnel, the proxy chain or the DNS layer broke.
+		log.Printf("[egress] probe %s via %q failed: %v", endpoint, proxyLabel(proxy), err)
 		return publicEgress{}
 	}
 	defer resp.Body.Close()
 	var exit publicEgress
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&exit) != nil {
+		log.Printf("[egress] probe %s via %q: status %d, unusable body", endpoint, proxyLabel(proxy), resp.StatusCode)
 		return publicEgress{}
 	}
 	if _, err := netip.ParseAddr(exit.IP); err != nil {
+		log.Printf("[egress] probe %s via %q: body has no usable ip (%q)", endpoint, proxyLabel(proxy), exit.IP)
 		return publicEgress{}
 	}
 	return exit
+}
+
+// proxyLabel renders a proxy URL for logs without its credentials.
+func proxyLabel(proxy string) string {
+	if proxy == "" {
+		return "direct"
+	}
+	u, err := url.Parse(proxy)
+	if err != nil || u.Host == "" {
+		return "unparsable"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // suppress unused import when ports change

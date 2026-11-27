@@ -28,6 +28,10 @@ const (
 	chain = "ARKEX_WG"
 	// mullvadDNS is the resolver reachable inside the tunnel.
 	mullvadDNS = "10.64.0.1"
+	// fallbackDNS is consulted only when Mullvad's resolver does not answer.
+	// It still leaves through the tunnel (the only permitted default route),
+	// so queries are never exposed to the host network.
+	fallbackDNS = "1.1.1.1"
 	// handshakeTimeout bounds how long Up waits for the first handshake.
 	handshakeTimeout = 20 * time.Second
 	// controlPlaneTable holds the host-gateway default route used by
@@ -142,6 +146,13 @@ func Up(ctx context.Context, cfg Config) (err error) {
 	if err = run(ctx, "ip", "route", "replace", "default", "dev", Interface); err != nil {
 		return err
 	}
+	// Mullvad's resolver lives at 10.64.0.1, which falls inside the 10.0.0.0/8
+	// host-pin exception above — without this more specific route the DNS
+	// queries leave via the docker gateway, hit nothing, and time out while
+	// resolv.conf points at them (relay-list fetch and every lookup fail).
+	if err = run(ctx, "ip", "route", "replace", mullvadDNS+"/32", "dev", Interface, "src", cfg.LocalAddr); err != nil {
+		return err
+	}
 
 	// Policy routing for LLM/control-plane sockets (SO_MARK): they keep the
 	// pre-tunnel default gateway and never enter the Mullvad tunnel. Task
@@ -150,8 +161,10 @@ func Up(ctx context.Context, cfg Config) (err error) {
 		return err
 	}
 
-	// Inside the tunnel: Mullvad's resolver.
-	if err = os.WriteFile("/etc/resolv.conf", []byte("nameserver "+mullvadDNS+"\n"), 0o644); err != nil {
+	// Inside the tunnel: Mullvad's resolver, with a public resolver as a
+	// backup for the case where the relay's DNS endpoint stops answering
+	// (lookups then fall through instead of stalling every hostname).
+	if err = os.WriteFile("/etc/resolv.conf", []byte("nameserver "+mullvadDNS+"\nnameserver "+fallbackDNS+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write resolv.conf: %w", err)
 	}
 	if hostAdds != "" {

@@ -11,9 +11,10 @@ import (
 // safety system declined the request rather than the model ending its turn.
 // Anthropic returns stop_reason "refusal" with an empty or partial message;
 // OpenAI-compatible endpoints return finish_reason "content_filter", which Norma
-// passes through unmapped.
+// passes through unmapped. z.ai GLM returns "sensitive" the same way: empty
+// delta, no usage, no error.
 func IsRefusalStop(stopReason string) bool {
-	return stopReason == "refusal" || stopReason == "content_filter"
+	return stopReason == "refusal" || stopReason == "content_filter" || stopReason == "sensitive"
 }
 
 // stopTracker keeps the stop reason of the latest model call of one run. The

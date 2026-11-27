@@ -1,17 +1,27 @@
 package llmpool
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/Autumn-27/norma/llm"
 )
 
 func TestIsRefusalStopReason(t *testing.T) {
-	if !IsRefusalStopReason("refusal") || !IsRefusalStopReason("content_filter") {
+	if !IsRefusalStopReason("refusal") || !IsRefusalStopReason("content_filter") || !IsRefusalStopReason("sensitive") {
 		t.Fatal("expected refusal stops")
 	}
 	if IsRefusalStopReason("end_turn") {
 		t.Fatal("end_turn is not a refusal")
+	}
+}
+
+// z.ai GLM's content filter: finish_reason "sensitive" with an empty delta, no
+// usage and no error. It must classify as a refusal so the pool fails over
+// instead of ending the round as a normal empty turn.
+func TestRefusalFromCompleteSensitive(t *testing.T) {
+	if err := RefusalFromComplete(llm.Message{}, "sensitive"); !errors.Is(err, ErrProviderRefusal) {
+		t.Fatalf("sensitive stop: got %v, want ErrProviderRefusal", err)
 	}
 }
 

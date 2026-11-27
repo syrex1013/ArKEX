@@ -1246,6 +1246,10 @@ export interface Settings {
   mullvad_private_key_set?: boolean;
   mullvad_relay?: string; // selected relay hostname
   mullvad_address?: string; // tunnel interface IP (bare IPv4); PUT validates and returns 400 otherwise
+  // Direct-egress override: on bypasses Mullvad, the global WireGuard config and
+  // the global proxy so traffic dials the target straight from the server IP
+  // (capture still records when on). Stored values are kept; off restores them.
+  egress_direct?: boolean;
   mullvad_task_blocked?: boolean; // true when task egress is dropped because Mullvad is enabled without a healthy session
   sliver_config_path?: string; // Sliver operator config path; settings beat ARKEX_SLIVER_CONFIG
 }
@@ -1257,6 +1261,7 @@ export interface MullvadEgress {
   interface: string;
   mode?: string; // "kernel" | "netstack" when a tunnel is up
   mode_setting?: string; // ""/"auto" | "kernel" | "netstack"
+  egress_direct?: boolean; // direct-egress override on: every tunnel/proxy bypassed
   global_proxy_set?: boolean;
   // Global WireGuard config route (upload): healthy session tunnels all target traffic.
   global_wg_set?: boolean;

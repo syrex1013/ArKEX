@@ -5,46 +5,15 @@ import * as React from "react";
 import { Globe } from "lucide-react";
 
 import { t } from "@/i18n";
-import { api, sseUrl } from "@/lib/api";
 import { isEgressBusy, subscribeEgressBusy } from "@/lib/egress-busy";
+import { getEgressLive, isEgressUnreachable, subscribeEgressLive } from "@/lib/egress-live";
 import { egressStatus } from "@/lib/egress-status";
-import type { MullvadEgress } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function MullvadIndicator() {
-  const [egress, setEgress] = React.useState<MullvadEgress>();
-  const [unreachable, setUnreachable] = React.useState(false);
+  const egress = React.useSyncExternalStore(subscribeEgressLive, getEgressLive);
+  const unreachable = React.useSyncExternalStore(subscribeEgressLive, isEgressUnreachable);
   const busy = React.useSyncExternalStore(subscribeEgressBusy, isEgressBusy);
-
-  React.useEffect(() => {
-    let alive = true;
-    const apply = (result: MullvadEgress) => {
-      if (!alive) return;
-      setEgress(result);
-      setUnreachable(false);
-    };
-    // First paint before the SSE handshake finishes.
-    void api
-      .mullvadEgress()
-      .then(apply)
-      .catch(() => {
-        if (alive) setUnreachable(true);
-      });
-
-    const es = new EventSource(sseUrl("/api/mullvad/egress/stream"));
-    es.onmessage = (e) => {
-      try {
-        apply(JSON.parse(e.data) as MullvadEgress);
-      } catch {
-        /* ignore malformed frame */
-      }
-    };
-    // EventSource auto-reconnects; keep the last known pill state across gaps.
-    return () => {
-      alive = false;
-      es.close();
-    };
-  }, []);
 
   const { route, state, ip } = egressStatus(egress, unreachable, busy);
   let routeLabel = t("Egress");

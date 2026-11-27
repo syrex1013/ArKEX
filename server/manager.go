@@ -383,7 +383,12 @@ const (
 	settingMullvadRelay        = "mullvad_relay"
 	settingMullvadAddress      = "mullvad_address" // tunnel interface IP from the device config
 	settingMullvadMode         = "mullvad_mode"    // ""/"auto" | "kernel" | "netstack"
-	settingSliverConfigPath    = "sliver_config_path"
+	// Direct-egress override (egress_direct, default off). When on, every egress
+	// route is bypassed — Mullvad, the uploaded global WireGuard config and the
+	// global proxy — and task traffic dials the target straight from the server
+	// IP. The stored values are kept; toggling off restores them.
+	settingEgressDirect     = "egress_direct"
+	settingSliverConfigPath = "sliver_config_path"
 	// defaultWebSearchBackend is used when web search is on but no backend was picked.
 	defaultWebSearchBackend = "ddgs"
 	// deepSeekWebSearchBackend borrows the active LLM profile instead of its own
@@ -944,6 +949,11 @@ func (m *Manager) egressStamp() string {
 	if gsess != nil && gsess.Healthy() {
 		return "tunneled"
 	}
+	// Direct-egress override: stored routing (incl. the global proxy) is
+	// bypassed, so a capture made while it is on exits direct.
+	if m.EgressDirect() {
+		return "direct"
+	}
 	m.mu.RLock()
 	gp := m.globalProxy
 	m.mu.RUnlock()
@@ -986,11 +996,27 @@ const blockedProxyURL = "http://127.0.0.1:9"
 // Without Mullvad, the capture/global-proxy resolution applies.
 // global_proxy's stored value is never changed by the wg session.
 func (m *Manager) EffectiveTaskProxyURL() string {
+	// Direct-egress override: every tunnel and egress proxy is bypassed. With
+	// capture on the recorder stays in the path (syncWGProxyEgress keeps its
+	// upstream direct); without capture, "" dials the target straight from the
+	// server IP. Toggling off restores the stored routing below.
+	if m.EgressDirect() {
+		if m.traffic != nil && m.TrafficEnabled() {
+			return m.traffic.ProxyAddr()
+		}
+		return ""
+	}
 	// Kernel mode: the WireGuard interface + iptables kill-switch tunnel every
-	// packet. Task transports keep the capture/global proxy chain (so MITM
-	// recording continues); that chain exits through the tunnel too.
+	// packet the container emits. A stored global proxy is a HOST-side hop: once
+	// the request reaches it, the host dials with its own routing, outside this
+	// container's tunnel — so it must not stay in the task chain here. Task
+	// traffic either goes through the in-container recorder (capture on) or
+	// dials out directly and is tunneled by the interface.
 	if wgkernel.IsUp() {
-		return m.baseProxyAddr()
+		if m.traffic != nil && m.TrafficEnabled() {
+			return m.traffic.ProxyAddr()
+		}
+		return ""
 	}
 	if sess := m.wgProxySession(); sess != nil {
 		if u := sess.ProxyURL(); u != "" && sess.Healthy() {
@@ -1029,6 +1055,11 @@ func (m *Manager) TaskEgressBlocked() bool {
 // including the fail-closed blocked URL when the tunnel is down. Empty when
 // neither tunnel is configured — callers keep their normal routing.
 func (m *Manager) ForcedTaskProxy() string {
+	// Direct-egress override: no tunnel owns egress, callers keep normal (or
+	// global-proxy) routing — the target gate and enrichment probes go direct.
+	if m.EgressDirect() {
+		return ""
+	}
 	if m.MullvadProxyEnabled() || m.GlobalWGConfigured() {
 		return m.EffectiveTaskProxyURL()
 	}
@@ -1055,9 +1086,13 @@ func (m *Manager) syncWGProxyEgress() {
 	}
 	if m.sandbox != nil {
 		// The sandbox env template is "http://%s": it wants a bare host:port.
-		if u, err := url.Parse(effective); err == nil && u.Host != "" {
-			m.sandbox.SetProxyAddr(u.Host)
+		// An empty effective proxy (capture off + direct egress) clears the
+		// stored address so sandbox containers stop reusing a dead tunnel.
+		host := ""
+		if u, err := url.Parse(effective); err == nil {
+			host = u.Host
 		}
+		m.sandbox.SetProxyAddr(host)
 	}
 	// The Playwright/MCP browser launches Chromium with the proxy from the same
 	// resolution — without this sync it would keep a stale (or no) proxy and
@@ -1348,6 +1383,46 @@ func (m *Manager) SetMullvadProxyEnabled(enabled bool) error {
 	return m.pg.SetBool(settingMullvadProxyEnabled, enabled)
 }
 
+// EgressDirect reports whether the direct-egress override is on (egress_direct,
+// default off). When on, EffectiveTaskProxyURL bypasses Mullvad, the uploaded
+// global WireGuard config and the global proxy so task traffic dials the target
+// straight from the server IP; capture (recording MITM) stays in the path when
+// enabled. The stored tunnel/proxy settings are untouched and restored on
+// toggle-off.
+func (m *Manager) EgressDirect() bool {
+	if m.pg == nil {
+		return false
+	}
+	return m.pg.GetBool(settingEgressDirect, false)
+}
+
+// SetEgressDirect persists the direct-egress override flag and applies the
+// tunnel side effects: on → stop the Mullvad tunnel and the global WireGuard
+// session (their watchdogs stand down while the override holds); off → rearm
+// the Mullvad watchdog, which rebuilds whichever tunnels are stored within one
+// 15s tick. Callers run syncWGProxyEgress + rebuildAgentsForEgressChange after
+// this so runtime paths and agents follow the new resolution.
+func (m *Manager) SetEgressDirect(on bool) error {
+	if err := m.pg.SetBool(settingEgressDirect, on); err != nil {
+		return err
+	}
+	if on {
+		m.stopWGProxy()
+		m.mu.Lock()
+		sess := m.globalWG
+		m.globalWG = nil
+		m.mu.Unlock()
+		if sess != nil {
+			_ = sess.Stop()
+		}
+	} else {
+		m.mu.Lock()
+		m.wgAutoDown = false // re-arm the Mullvad watchdog; stored tunnels rebuild
+		m.mu.Unlock()
+	}
+	return nil
+}
+
 // SetMullvadProxyPort persists the Mullvad proxy port.
 func (m *Manager) SetMullvadProxyPort(port uint16) error {
 	return m.pg.SetSetting(settingMullvadProxyPort, strconv.Itoa(int(port)))
@@ -1520,6 +1595,14 @@ func (m *Manager) watchWGProxy() {
 	for {
 		time.Sleep(15 * time.Second)
 		m.maintainGlobalWG()
+		// Direct-egress override: hold both tunnels down while it is on. The
+		// override tears them down when it turns on; this keeps a settings
+		// change made while it is on (e.g. re-enabling Mullvad) from rearming
+		// the watchdogs behind the operator's back.
+		if m.EgressDirect() {
+			wasUp = false
+			continue
+		}
 		if !m.MullvadProxyEnabled() {
 			wasUp = false
 			continue
@@ -1578,6 +1661,11 @@ func (m *Manager) watchWGProxy() {
 // config is stored (fail closed while it is not healthy — same contract as
 // Mullvad). Runs on every watchdog tick, independent of the Mullvad state.
 func (m *Manager) maintainGlobalWG() {
+	// Direct-egress override: the global session is bypassed and torn down;
+	// the Mullvad watchdog skips its restarts too (see watchWGProxy).
+	if m.EgressDirect() {
+		return
+	}
 	if !m.GlobalWGConfigured() {
 		return
 	}
