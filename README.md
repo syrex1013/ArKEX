@@ -8,7 +8,7 @@
 [![Go](https://img.shields.io/badge/Go-1.27-6b34db)](go.mod)
 [![Sponsor](https://img.shields.io/badge/sponsor-syrex1013-6b34db?logo=github)](https://github.com/sponsors/syrex1013)
 
-[Quick start](#quick-start) · [Screenshots](#screenshots) · [How it works](#how-it-works) · [Install](#installation) · [Configuration](#configuration) · [Security](SECURITY.md)
+[What's new](#whats-new) · [Quick start](#quick-start) · [Screenshots](#screenshots) · [How it works](#how-it-works) · [Install](#installation) · [Configuration](#configuration) · [Security](SECURITY.md)
 
 </div>
 
@@ -30,6 +30,38 @@ justify it, and every autonomous action passes through scope rules, approval gat
   token and turn budgets, a target noise governor, and prompt-injection framing on tool output.
 - **Self-hosted and model-agnostic.** One Go binary with the Next.js UI embedded, PostgreSQL,
   your own Anthropic/OpenAI-compatible endpoint, or a local Ollama.
+
+---
+
+## What's new
+
+- **Direct egress override.** A toggle beside the egress pill turns off Mullvad, the uploaded
+  global WireGuard config and the global proxy for task traffic in one click, so requests dial the
+  target straight from the server IP. The stored settings are kept and restored when you toggle it
+  back; with traffic capture on, the recording MITM proxy stays in the path. The setting is
+  `egress_direct` (off by default) — see [Platform](#platform).
+- **Provider refusals now fail over.** A model whose safety filter silently blocks the completion
+  — z.ai GLM returns `finish_reason: sensitive` with an empty delta, no usage and no error;
+  Anthropic returns `refusal`, OpenAI-compatible endpoints `content_filter` — is classified as a
+  failed call, so the task's LLM chain advances instead of ending the round as if the model had
+  finished. Before this, a filtered planner round produced zero intents and the task sat "running"
+  with no error.
+- **Kernel-mode egress correctness.** While the `arkexwg0` tunnel is up, a stored global proxy is
+  no longer kept in the task proxy chain: that proxy is a host-side hop which dials with the host's
+  own routing, outside the container's kill-switch. Task traffic now goes through the in-container
+  recorder (capture on) or dials directly and is tunnelled by the interface (capture off) — see
+  [Platform](#platform).
+- **Mullvad DNS resilience.** Mullvad's in-tunnel resolver `10.64.0.1` falls inside the
+  `10.0.0.0/8` host-pin route exception, so its lookups left through the Docker gateway and timed
+  out; the tunnel now installs a more specific `/32` route for it, and `resolv.conf` lists `1.1.1.1`
+  as a second nameserver that still exits through the tunnel. Relay listing and every hostname
+  lookup survive an unresponsive relay DNS endpoint.
+- **UI assets are answered honestly.** A missing `_next/` chunk, or any path with a file extension,
+  now returns `404` instead of the SPA shell, and hashed build output is served `immutable` while
+  route documents revalidate. A tab holding pre-redeploy HTML used to receive `200 text/html` for a
+  stale chunk, the browser refused to execute it, and the route died with an opaque "page couldn't
+  load"; a redeploy is now picked up on the next navigation — see
+  [Updating and upgrading](#updating-and-upgrading).
 
 ---
 
@@ -323,7 +355,12 @@ engagement-level history separate from the task graph so the work stays resumabl
 ### Platform
 
 - **LLM profiles with failover**: Anthropic, OpenAI, OpenAI-compatible relays and keyless Ollama;
-  multiple profiles per task with automatic failover.
+  multiple profiles per task with automatic failover. A provider-side refusal — Anthropic
+  `refusal`, OpenAI-compatible `content_filter`, z.ai `sensitive` — counts as a failed call, so
+  the chain advances to the next profile instead of ending the round as though the model stopped;
+  an empty filtered response is never accepted as a finished turn. A prose refusal (a model that
+  argues about the work instead of acting) gets up to two reminder nudges before the run is
+  treated as refused.
 - **Token accounting**: per-task and per-session usage, cache reads/writes, and an LLM record view
   for every call.
 - **MCP servers, skills, memory and a workspace**: extend the agent with remote tools and reusable
@@ -348,9 +385,24 @@ engagement-level history separate from the task graph so the work stays resumabl
   gateway, so control-plane LLM calls stay off Mullvad while task traffic stays fail-closed on
   the tunnel. Mode is picked via the `mullvad_mode` setting (`auto` | `kernel` | `netstack`;
   `auto` prefers kernel when the host allows it). Postgres/docker networks are route exceptions;
-  the Postgres hostname is pinned to `/etc/hosts` before DNS switches into the tunnel
-  (`10.64.0.1`). The watchdog rebuilds the interface if the route dies and restarts handshakes
-  every 15s; Down (manual or mode switch) removes the kill-switch and restores routing/DNS.
+  the Postgres hostname is pinned to `/etc/hosts` before DNS switches into the tunnel. While the
+  interface is up the task proxy chain keeps no stored global proxy: that proxy is a host-side hop,
+  so the host would dial it with its own routing, outside this container's kill-switch. Task
+  traffic either goes through the in-container recorder (capture on) or dials out directly and is
+  tunnelled by the interface (capture off). Mullvad's in-tunnel resolver `10.64.0.1` falls inside
+  the `10.0.0.0/8` host-pin exception, so the interface gets a more specific `/32` route for it,
+  and `resolv.conf` lists `1.1.1.1` as a second nameserver (still exiting through the tunnel) so
+  lookups fall through when the relay's DNS endpoint stops answering. The watchdog rebuilds the
+  interface if the route dies and restarts handshakes every 15s; Down (manual or mode switch)
+  removes the kill-switch and restores routing/DNS.
+- **Direct egress override**: the **Direct** toggle beside the egress pill in the header sets
+  `egress_direct` (also `PUT /api/settings`), so it is reachable from every page. On, task
+  traffic bypasses Mullvad, the uploaded global WireGuard config and the global proxy: both tunnels
+  are torn down synchronously and their watchdogs stand down for as long as the override holds, so
+  nothing re-arms behind the operator. The value is persisted and survives restarts; off restores
+  the stored routing and the watchdog rebuilds whichever tunnels are configured within one 15s tick.
+  Traffic capture, scope and deny gates, and the noise governor still apply — the switch only
+  decides which exit the traffic uses.
 - **Single binary**: the Next.js UI is embedded with `go:embed`; PostgreSQL is the only external
   dependency.
 
@@ -650,6 +702,11 @@ Daily cron example (03:20, operator crontab):
 > `schema.sql` baseline, then any pending numbered migration from `db/migrations/`, in order, each
 > in its own transaction. Restarting the new binary is the upgrade. Back up `./data`, `keys/` and
 > the database before upgrading.
+
+A redeployed UI needs no cache clearing: route documents revalidate on the next navigation, while
+hashed build output under `_next/static` is cached permanently. A chunk that no longer exists
+returns `404` rather than the SPA shell, so a tab left open across a redeploy fails loudly instead
+of dying on an opaque "page couldn't load" — one reload picks up the new build.
 
 **Update banner (opt-in, off by default)**: start ARTEX with `ARTEX_UPDATE_CHECK=1` to ask the
 public GitHub releases API for the latest tag, at most once per 24 hours (cached in memory; a
